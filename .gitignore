@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+dist_nuitka/
+dist_installer/
+build/
+*.log
