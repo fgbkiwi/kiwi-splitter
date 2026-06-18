@@ -1,7 +1,7 @@
-# PDF Splitting Tool (Otimizado para PJe)
+# PDF Splitting Tool (Otimizado para PJe-JT)
 
 ## O que é este script?
-O `kiwi_splitter.py` é uma aplicação enxuta e especializada para redimensionamento, particionamento e preservação nativa de PDFs. Seu objetivo principal é viabilizar o envio de grandes processos a LLMs como o Gemini 3.1 Pro, sem esgotar as regras de limite (usualmente 50 MB no AI Studio). Diferente dos conversores de PDF para Markdown, aqui não fazemos OCR nem conversão para Markdown. A prioridade é puramente a **montagem do PDF**.
+O `kiwi_splitter.py` é uma aplicação enxuta e especializada para redimensionamento, particionamento e preservação nativa de PDFs. Seu objetivo principal é viabilizar o envio de grandes processos a LLMs como o Gemini 3.1 Pro, sem esgotar as regras de limite (usualmente 50 MB de tamanho e 1 milhão de tokens no Google AI Studio). Esta aplicação foi desenvolvida exclusivamente para manipulação de PDFs gerados pelo Processo Judicial Eletrônico da Justiça do Traabalho (PJe-JT). O sumário gerado pelo PJe-JT ao final do PDF é utilizado nesta aplicação como um seletor de documentos, com contagem estimada de tokens em tempo real, para que o usuário possa dimensionar apropriadamente o arquivo processado a ser enviado ao LLM.
 
 ## Funcionalidades Chave:
 
@@ -19,7 +19,7 @@ Este script conta com um mecanismo engenhoso e poderoso que **quebra esse incha�
 - A união dessas forças, somada ao **algoritmo de Extração Nativa Bina-rápida (Binary Search de bytes)** faz com que você rotineiramente chegue em um fracionamento 4 vezes mais leve em bytes do que o arquivo primitivo do tribunal indicava, economizando tempo formidável de Upload futuro e processamento de LLMs.
 
 
-### Geração de Arquivo Consolidado (`_full_sanitized.pdf`)
+## Geração de Arquivo Consolidado (`_full_sanitized.pdf`)
 A partir da versão **1.1.0**, o script também gera automaticamente um arquivo contendo a fusão de *todos* os documentos selecionados em um único PDF (`_full_sanitized.pdf`). O objetivo desta funcionalidade é fornecer um arquivo consolidado, leve e completamente sanitizado, pronto para ser submetido a outros conversores de PDF para Markdown, dispensando os fracionamentos para cenários e processadores que toleram PDFs pesados e priorizem contexto ininterrupto.
 
 ## Atualizações Recentes (Migração Definitiva para PyQt6)
@@ -27,3 +27,8 @@ A partir da versão **1.1.0**, o script também gera automaticamente um arquivo 
 * **Resolução do "Loss of Focus Bug" no Windows:** Anteriormente (na versão Flet), a pesada manipulação matemática do `PyMuPDF` bloqueava totalmente a Thread Principal Assíncrona do Flet, e a interface gráfica "dormia" até que o usuário clicasse fora da janela. Com PyQt6, a interface roda nativamente sobre o DWM do Windows. O monitoramento/log é disparado via Sistema de Sinais Seguros de Thread do Qt (`pyqtSignal(str)`).
 * **Velocidade e Estabilidade:** O algorítmo C do `PyMuPDF` (`fitz.tobytes` para particionamento de PDFs de 200MB+) roda agonicamente fechado em uma `QThread` invisível isolada no background, enquanto a GUI continua fluindo a 60 FPS, aceitando cliques e processando barras de progresso sem qualquer frame delay artificial.
 * **Componentes Responsivos:** Foi implementada uma QTableWditet nativa com seleção em lote auto-estilizável em "Fusion" UI para consistência moderna nativa. Essa alteração vale exclusivamente para o script de Splitting, garantindo escalabilidade à prova de falhas na máquina do analista.
+
+## Atualizações em estudo
+* **Conversão para Markdown**
+* **OCR de tabelas, imagens e documentos manuscritos**
+- Estamos testando várias bibliotecas e LLMs para encontrar o balanço ideal de performance e confiabilidade, com ou sem processamento por GPU. Aceitamos sugestões!
