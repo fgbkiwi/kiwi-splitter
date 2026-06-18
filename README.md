@@ -32,3 +32,6 @@ A partir da versão **1.1.0**, o script também gera automaticamente um arquivo 
 * **Conversão para Markdown**
 * **OCR de tabelas, imagens e documentos manuscritos**
 - Estamos testando várias bibliotecas e LLMs para encontrar o balanço ideal de performance e confiabilidade, com ou sem processamento por GPU. Aceitamos sugestões!
+
+## Instalação
+- A aplicação está disponível apenas para Windows. Para instalar, simplesmente faça o download e execute o arquivo "Kiwi-Splitter_1.1.4.exe" no diretório "kiwi-splitter\build\nsis\".
