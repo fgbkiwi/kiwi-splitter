@@ -1,12 +1,12 @@
-# PDF Splitting Tool (Otimizado para PJe-JT)
+# PDF Splitting Tool (Otimizado para PJe-JT e LLMs)
 
 ## O que é este script?
-O `kiwi_splitter.py` é uma aplicação enxuta e especializada para redimensionamento, particionamento e preservação nativa de PDFs. Seu objetivo principal é viabilizar o envio de grandes processos a LLMs como o Gemini 3.1 Pro, sem esgotar as regras de limite (usualmente 50 MB de tamanho e 1 milhão de tokens no Google AI Studio). Esta aplicação foi desenvolvida exclusivamente para manipulação de PDFs gerados pelo Processo Judicial Eletrônico da Justiça do Traabalho (PJe-JT). O sumário gerado pelo PJe-JT ao final do PDF é utilizado nesta aplicação como um seletor de documentos, com contagem estimada de tokens em tempo real, para que o usuário possa dimensionar apropriadamente o arquivo processado a ser enviado ao LLM.
+O `kiwi_splitter.py` é uma aplicação enxuta e especializada para redimensionamento, particionamento e preservação nativa de PDFs. Seu objetivo principal é viabilizar o envio de grandes processos a LLMs sem esgotar as regras de limite de contexto e tamanho. Esta aplicação foi desenvolvida exclusivamente para manipulação de PDFs gerados pelo Processo Judicial Eletrônico da Justiça do Traabalho (PJe-JT). O sumário gerado pelo PJe-JT ao final do PDF é utilizado nesta aplicação como um seletor de documentos, com contagem estimada de tokens em tempo real, para que o usuário possa dimensionar apropriadamente o arquivo processado a ser enviado ao LLM.
 
 ## Funcionalidades Chave:
 
 - **Automação de Divisão Baseada em Peso**: Se você submeter um ou mais documentos gigantes originários do processo com tamanho na casa de cem Megabytes ou mais, a configuração automática do aplicativo se encarrega de dividir em fatias ideais. Cada PDF será segmentado progressivamente sem que nenhuma fatia jamais exceda **45 MB**.
-- **Mantém a Contagem de Tokens**: Os cálculos analíticos de tamanho do documento (em tokens LLM) foram deixados intactos via script tiktoken interno para consistência visual do seu projeto inicial.
+- **Mantém a Contagem de Tokens**: Os cálculos analíticos de tamanho do documento (em tokens LLM) foram deixados intactos via script tiktoken interno para manter a previsibilidade do recorte.
 - **Botão Inteligente de Marcação Geral**: Você pediu e agora acima da lista do Sumário há um alternador global `Selecionar Todos` simplificando a logística.
 - **Log Persistente**: Logs idênticos aos scripts antecessores.
 

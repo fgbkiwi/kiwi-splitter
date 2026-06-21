@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QMessageBox, QFrame, QScrollArea
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtGui import QIcon, QPixmap
 
 def ts() -> str:
     return time.strftime("[%Y-%m-%d %H:%M:%S]")
@@ -40,6 +41,9 @@ def estimate_tokens(text: str) -> int:
         words = len(re.findall(r"\S+", clean))
         chars = len(clean)
         return max(int(words * 1.3), int(chars / 4))
+
+def resource_path(filename: str) -> str:
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
 
 class AppState:
     def __init__(self):
@@ -406,21 +410,39 @@ class SplitThread(QThread):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Kiwi Splitter & Sanitizer")
+        self.setWindowTitle("Fracionador e Sanitizador de PDF (PJe) para LLMs")
         self.resize(1000, 800)
         self.state = AppState()
+        app_icon_path = resource_path("kiwi-splitter.ico")
+        if os.path.exists(app_icon_path):
+            self.setWindowIcon(QIcon(app_icon_path))
         
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
         layout = QVBoxLayout(main_widget)
         
         # Sec 0: Application VISUAL Title
-        lbl_title = QLabel("<b>Fracionador e Sanitizador de PDF (PJe) para Google AI Studio</b>")
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(12)
+
+        lbl_title = QLabel("<b>Fracionador e Sanitizador de PDF (PJe) para LLMs</b>")
         font = lbl_title.font()
         font.setPointSize(font.pointSize() + 2)
         lbl_title.setFont(font)
-        lbl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(lbl_title)
+        lbl_title.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+
+        lbl_logo = QLabel()
+        lbl_logo.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
+        logo_pixmap = QPixmap(resource_path("KiwiSplitterSquared.png"))
+        if not logo_pixmap.isNull():
+            lbl_logo.setPixmap(logo_pixmap.scaledToHeight(56, Qt.TransformationMode.SmoothTransformation))
+
+        header_row.addStretch(1)
+        header_row.addWidget(lbl_title)
+        header_row.addStretch(1)
+        header_row.addWidget(lbl_logo)
+        layout.addLayout(header_row)
 
         line_title = QFrame()
         line_title.setFrameShape(QFrame.Shape.HLine)
@@ -707,6 +729,9 @@ class MainWindow(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    app_icon_path = resource_path("kiwi-splitter.ico")
+    if os.path.exists(app_icon_path):
+        app.setWindowIcon(QIcon(app_icon_path))
     win = MainWindow()
     win.show()
     sys.exit(app.exec())
