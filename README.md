@@ -34,4 +34,14 @@ A partir da versão **1.1.0**, o script também gera automaticamente um arquivo 
 - Estamos testando várias bibliotecas e LLMs para encontrar o balanço ideal de performance e confiabilidade, com ou sem processamento por GPU. Aceitamos sugestões!
 
 ## Instalação
-- A aplicação está disponível apenas para Windows. Para instalar, simplesmente faça o download e execute o arquivo "Kiwi-Splitter_1.1.4.exe" no diretório "kiwi-splitter\build\nsis\".
+### Usuário final (recomendado)
+- A aplicação está disponível apenas para Windows.
+- Baixe o instalador `.exe` na página de **Releases** do repositório GitHub.
+- Execute o arquivo `Kiwi-Splitter_*.exe` e siga o assistente de instalação.
+
+### Gerar instalador localmente (Pynsist)
+- Clone o repositório e instale as dependências do projeto.
+- Execute o script `build_kiwi_splitter_pynsist.ps1`.
+- Ao final, o instalador será gerado em `build/nsis/` com nome no formato `Kiwi-Splitter_*.exe`.
+
+> Observação: a pasta `build/` é artefato de compilação local e normalmente não é versionada no Git.
