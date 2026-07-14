@@ -36,13 +36,14 @@ A partir da versão **1.1.0**, o script também gera automaticamente um arquivo 
 ## Instalação
 ### Usuário final (recomendado)
 - A aplicação está disponível apenas para Windows.
-- Baixe o instalador na pasta [`installer/`](https://github.com/fgbkiwi/kiwi-splitter/tree/main/installer) do repositório — arquivo atual: [`Kiwi-Splitter_1.1.5.exe`](https://github.com/fgbkiwi/kiwi-splitter/raw/main/installer/Kiwi-Splitter_1.1.5.exe).
-- Na página do arquivo no GitHub, use o botão **Download** (ou abra o link acima) para salvar o `.exe` no seu computador.
-- Execute o instalador e siga o assistente de instalação.
+- Baixe o instalador na página de [**Releases**](https://github.com/fgbkiwi/kiwi-splitter/releases/latest) do repositório GitHub.
+- Execute o arquivo `Kiwi-Splitter_*.exe` e siga o assistente de instalação.
+- Em execuções seguintes, o próprio aplicativo verifica **no máximo uma vez por dia** se há versão mais recente nas Releases e oferece baixar/instalar (é possível recusar e continuar usando a versão atual).
 
 ### Gerar instalador localmente (Pynsist)
 - Clone o repositório e instale as dependências do projeto.
 - Execute o script `build_kiwi_splitter_pynsist.ps1`.
-- Ao final, o instalador será gerado em `build/nsis/` e uma cópia será publicada em `installer/` (única pasta versionada com o `.exe`).
+- Ao final, o instalador será gerado em `build/nsis/` com nome no formato `Kiwi-Splitter_*.exe`.
+- Publique o `.exe` como asset de uma [GitHub Release](https://github.com/fgbkiwi/kiwi-splitter/releases) (tag `vX.Y.Z`), para que o download manual e a atualização automática funcionem.
 
-> Observação: a pasta `build/` contém artefatos de compilação locais e **não** é versionada no Git. Apenas o instalador em `installer/` entra no repositório.
+> Observação: a pasta `build/` e o instalador `.exe` **não** são versionados no Git — apenas publicados nas Releases, para não sobrecarregar o repositório.

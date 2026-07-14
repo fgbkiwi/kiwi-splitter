@@ -43,6 +43,16 @@ if (-not $versionLineFound) {
 $utf8NoBom = New-Object System.Text.UTF8Encoding $false
 [System.IO.File]::WriteAllLines((Join-Path $ScriptDir $CONFIG_FILE), $cfgLines, $utf8NoBom)
 
+# Sincronizar APP_VERSION no codigo da aplicacao (usado na checagem de atualizacoes)
+$AppPy = Join-Path $ScriptDir "kiwi_splitter.py"
+$appPyText = [System.IO.File]::ReadAllText($AppPy)
+$appPyUpdated = [regex]::Replace($appPyText, '(?m)^APP_VERSION\s*=\s*"[^"]*"', "APP_VERSION = `"$VERSION`"")
+if ($appPyUpdated -eq $appPyText -and $appPyText -notmatch '(?m)^APP_VERSION\s*=') {
+    Write-Error "Constante APP_VERSION nao encontrada em kiwi_splitter.py."
+    exit 1
+}
+[System.IO.File]::WriteAllText($AppPy, $appPyUpdated, $utf8NoBom)
+
 $INSTALLER = "build\nsis\${APP_NAME}_${VERSION}.exe"
 Write-Host "Versao do build: $VERSION (pyproject.toml)" -ForegroundColor Gray
 
@@ -113,13 +123,7 @@ if ($LASTEXITCODE -ne 0) {
 
 Copy-Item -Force (Join-Path $ScriptDir $ICON_SOURCE) (Join-Path $ScriptDir 'build\nsis\KiwiSplitterSquared.png')
 
-# Publicar apenas o .exe do instalador na pasta versionada (sem demais artefatos de build)
-$InstallerDir = Join-Path $ScriptDir "installer"
-New-Item -ItemType Directory -Path $InstallerDir -Force | Out-Null
-Get-ChildItem -Path $InstallerDir -Filter "${APP_NAME}_*.exe" -ErrorAction SilentlyContinue | Remove-Item -Force
-$PublishedInstaller = Join-Path $InstallerDir "${APP_NAME}_${VERSION}.exe"
-Copy-Item -Force $INSTALLER $PublishedInstaller
-
 Write-Host "`nInstalador gerado em: $INSTALLER" -ForegroundColor Green
-Write-Host "Copia versionada em: $PublishedInstaller" -ForegroundColor Green
+Write-Host "Publique em GitHub Releases (nao versionar o .exe no Git):" -ForegroundColor Yellow
+Write-Host "  gh release create v$VERSION `"$INSTALLER`" --title `"$APP_NAME $VERSION`" --latest" -ForegroundColor Gray
 Write-Host "`nBuild concluido!" -ForegroundColor Green
