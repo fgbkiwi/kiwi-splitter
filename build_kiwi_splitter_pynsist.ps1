@@ -113,5 +113,13 @@ if ($LASTEXITCODE -ne 0) {
 
 Copy-Item -Force (Join-Path $ScriptDir $ICON_SOURCE) (Join-Path $ScriptDir 'build\nsis\KiwiSplitterSquared.png')
 
+# Publicar apenas o .exe do instalador na pasta versionada (sem demais artefatos de build)
+$InstallerDir = Join-Path $ScriptDir "installer"
+New-Item -ItemType Directory -Path $InstallerDir -Force | Out-Null
+Get-ChildItem -Path $InstallerDir -Filter "${APP_NAME}_*.exe" -ErrorAction SilentlyContinue | Remove-Item -Force
+$PublishedInstaller = Join-Path $InstallerDir "${APP_NAME}_${VERSION}.exe"
+Copy-Item -Force $INSTALLER $PublishedInstaller
+
 Write-Host "`nInstalador gerado em: $INSTALLER" -ForegroundColor Green
+Write-Host "Copia versionada em: $PublishedInstaller" -ForegroundColor Green
 Write-Host "`nBuild concluido!" -ForegroundColor Green
