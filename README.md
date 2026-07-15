@@ -42,8 +42,12 @@ A partir da versão **1.1.0**, o script também gera automaticamente um arquivo 
 
 ### Gerar instalador localmente (Pynsist)
 - Clone o repositório e instale as dependências do projeto.
-- Execute o script `build_kiwi_splitter_pynsist.ps1`.
+- Execute o script de build (incrementa a versão **antes** de compilar, como no Kiwiscribe):
+  - `.\build_kiwi_splitter_pynsist.ps1` — bump **patch** (padrão), ex.: `1.1.5` → `1.1.6`
+  - `.\build_kiwi_splitter_pynsist.ps1 minor` — bump **minor**
+  - `.\build_kiwi_splitter_pynsist.ps1 major` — bump **major**
+- A fonte única da versão é `APP_VERSION` em `kiwi_splitter.py`; `bump_version.py` sincroniza também `kiwi_splitter_pynsist.cfg` e `pyproject.toml`.
 - Ao final, o instalador será gerado em `build/nsis/` com nome no formato `Kiwi-Splitter_*.exe`.
 - Publique o `.exe` como asset de uma [GitHub Release](https://github.com/fgbkiwi/kiwi-splitter/releases) (tag `vX.Y.Z`), para que o download manual e a atualização automática funcionem.
 
-> Observação: a pasta `build/` e o instalador `.exe` **não** são versionados no Git — apenas publicados nas Releases, para não sobrecarregar o repositório.
+> Observação: a pasta `build/` e o instalador `.exe` **não** são versionados no Git — apenas publicados nas Releases, para não sobrecarregar o repositório. Cada execução do build incrementa a versão; reexecutar sem querer continua avançando o patch.

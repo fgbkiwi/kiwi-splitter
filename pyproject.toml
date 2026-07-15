@@ -1,6 +1,6 @@
 [project]
 name = "kiwi-splitter"
-version = "1.1.5"
+version = "1.1.6"
 description = "PyQt6 PDF splitter and sanitizer for large Brazilian PJe PDFs and LLM workflows."
 requires-python = ">=3.14"
 dependencies = [
