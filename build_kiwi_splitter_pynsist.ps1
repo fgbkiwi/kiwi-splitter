@@ -1,19 +1,27 @@
 # ============================================================
 # Build script: Kiwi-Splitter (Pynsist + NSIS) com version bump
+# e publicacao da Release no GitHub.
+#
 # Prerequisitos:
 #   uv / venv .venv
 #   uv pip install pynsist
 #   NSIS instalado (https://nsis.sourceforge.io)
+#   GitHub CLI (gh) autenticado — so necessario se for publicar
 #
-# Uso (igual ao Kiwiscribe):
-#   .\build_kiwi_splitter_pynsist.ps1            # patch (padrao)
-#   .\build_kiwi_splitter_pynsist.ps1 minor
-#   .\build_kiwi_splitter_pynsist.ps1 major
+# Uso:
+#   .\build_kiwi_splitter_pynsist.ps1                 # patch + publica Release
+#   .\build_kiwi_splitter_pynsist.ps1 minor           # minor + publica Release
+#   .\build_kiwi_splitter_pynsist.ps1 major           # major + publica Release
+#   .\build_kiwi_splitter_pynsist.ps1 -NoPublish      # so gera o .exe (sem Release)
+#   .\build_kiwi_splitter_pynsist.ps1 minor -NoPublish
 # ============================================================
 
 param(
     [ValidateSet("patch", "minor", "major")]
-    [string]$Bump = "patch"
+    [string]$Bump = "patch",
+
+    # Escape hatch: builds de teste sem criar Release no GitHub
+    [switch]$NoPublish
 )
 
 $ErrorActionPreference = "Stop"
@@ -26,6 +34,7 @@ $ICON_COPY    = "kiwi-splitter.ico"
 $CONFIG_FILE  = "kiwi_splitter_pynsist.cfg"
 $BUMP_SCRIPT  = "bump_version.py"
 $PYTHON_EXE   = ".venv\Scripts\python.exe"
+$GITHUB_REPO  = "fgbkiwi/kiwi-splitter"
 
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host " Building Kiwi-Splitter Windows Installer" -ForegroundColor Cyan
@@ -46,8 +55,20 @@ if (-not (Test-Path $ICON_SOURCE)) {
     exit 1
 }
 
+if (-not $NoPublish) {
+    if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
+        Write-Error "GitHub CLI (gh) nao encontrado. Instale-o ou use -NoPublish para gerar so o instalador."
+        exit 1
+    }
+    gh auth status 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "GitHub CLI nao autenticado. Rode 'gh auth login' ou use -NoPublish."
+        exit 1
+    }
+}
+
 # --- Bump de versao (fonte unica: APP_VERSION em kiwi_splitter.py) --------
-Write-Host "`n[0/3] Incrementando versao ($Bump)..." -ForegroundColor Cyan
+Write-Host "`n[0/4] Incrementando versao ($Bump)..." -ForegroundColor Cyan
 $bumpOutput = & $PYTHON_EXE $BUMP_SCRIPT $Bump 2>&1
 $bumpExit = $LASTEXITCODE
 $bumpOutput | ForEach-Object { Write-Host $_ }
@@ -63,10 +84,11 @@ if (-not $VERSION) {
 $VERSION = $VERSION.ToString().Trim()
 Write-Host "Nova versao: $VERSION" -ForegroundColor Green
 
-$INSTALLER = "build\nsis\${APP_NAME}_${VERSION}.exe"
+$INSTALLER = Join-Path $ScriptDir "build\nsis\${APP_NAME}_${VERSION}.exe"
+$TAG = "v$VERSION"
 
 # --- Garantir pynsist instalado -----------------------------------------
-Write-Host "`n[1/3] Instalando pynsist..." -ForegroundColor Cyan
+Write-Host "`n[1/4] Instalando pynsist..." -ForegroundColor Cyan
 uv pip install --quiet pynsist --python $PYTHON_EXE
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Falha ao instalar pynsist."
@@ -123,7 +145,7 @@ if (Test-Path "build\nsis") {
 }
 
 # --- Compilar com Pynsist ------------------------------------------------
-Write-Host "`n[2/3] Gerando instalador com Pynsist + NSIS..." -ForegroundColor Cyan
+Write-Host "`n[2/4] Gerando instalador com Pynsist + NSIS..." -ForegroundColor Cyan
 & $PYTHON_EXE -m nsist $CONFIG_FILE
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Pynsist falhou (exit code $LASTEXITCODE). Abortando."
@@ -131,10 +153,14 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # pynsist pode retornar 0 mesmo se makensis falhar; confirmar o .exe
-Write-Host "`n[3/3] Verificando saida do instalador..." -ForegroundColor Cyan
+Write-Host "`n[3/4] Verificando saida do instalador..." -ForegroundColor Cyan
 $produced = Get-ChildItem -Path "build\nsis" -Filter "*.exe" -ErrorAction SilentlyContinue
 if (-not $produced) {
     Write-Error "Nenhum instalador .exe foi gerado em build\nsis. makensis provavelmente falhou."
+    exit 1
+}
+if (-not (Test-Path $INSTALLER)) {
+    Write-Error "Instalador esperado nao encontrado: $INSTALLER"
     exit 1
 }
 
@@ -148,7 +174,43 @@ Write-Host " INSTALLER BUILD SUCCESSFUL!" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Green
 Write-Host "Versao:     $VERSION"
 Write-Host "Instalador: $INSTALLER"
-Write-Host ""
-Write-Host "Publique em GitHub Releases (nao versionar o .exe no Git):" -ForegroundColor Yellow
-Write-Host "  gh release create v$VERSION `"$INSTALLER`" --title `"$APP_NAME $VERSION`" --latest" -ForegroundColor Gray
+
+# --- Publicar Release no GitHub ------------------------------------------
+if ($NoPublish) {
+    Write-Host "`nPublicacao no GitHub omitida (-NoPublish)." -ForegroundColor Yellow
+    Write-Host "Para publicar depois:" -ForegroundColor Gray
+    Write-Host "  gh release create $TAG `"$INSTALLER`" --repo $GITHUB_REPO --title `"$APP_NAME $VERSION`" --latest" -ForegroundColor Gray
+} else {
+    Write-Host "`n[4/4] Publicando Release $TAG no GitHub..." -ForegroundColor Cyan
+
+    $existing = gh release view $TAG --repo $GITHUB_REPO 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Error "A Release $TAG ja existe em $GITHUB_REPO. Abortando publicacao (o instalador local permanece em $INSTALLER)."
+        exit 1
+    }
+
+    $notes = @"
+Instalador Windows do $APP_NAME $VERSION.
+
+Baixe o arquivo .exe e execute o assistente de instalacao.
+
+O aplicativo verifica atualizacoes automaticamente (no maximo 1x por dia) nesta pagina de Releases.
+"@
+
+    gh release create $TAG $INSTALLER `
+        --repo $GITHUB_REPO `
+        --title "$APP_NAME $VERSION" `
+        --notes $notes `
+        --latest
+
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Falha ao criar a Release $TAG. O instalador local esta em: $INSTALLER"
+        exit 1
+    }
+
+    $releaseUrl = "https://github.com/$GITHUB_REPO/releases/tag/$TAG"
+    Write-Host "Release publicada: $releaseUrl" -ForegroundColor Green
+    Write-Host "Lembre-se de fazer commit/push do bump de versao ($VERSION) se ainda nao estiver no remoto." -ForegroundColor Yellow
+}
+
 Write-Host "`nBuild concluido!" -ForegroundColor Green

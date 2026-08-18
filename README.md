@@ -31,23 +31,30 @@ A partir da versão **1.1.0**, o script também gera automaticamente um arquivo 
 ## Atualizações em estudo
 * **Conversão para Markdown**
 * **OCR de tabelas, imagens e documentos manuscritos**
-- Estamos testando várias bibliotecas e LLMs para encontrar o balanço ideal de performance e confiabilidade, com ou sem processamento por GPU. Aceitamos sugestões!
+- Estamos testando várias bibliotecas e LLMs para encontrar o balanço ideal de performance e confiabilidade, com ou sem processamento por GPU. Em breve indicaremos o link de um novo projeto com estas funcionalidades.
 
 ## Instalação
-### Usuário final (recomendado)
-- A aplicação está disponível apenas para Windows.
-- Baixe o instalador na página de [**Releases**](https://github.com/fgbkiwi/kiwi-splitter/releases/latest) do repositório GitHub.
-- Execute o arquivo `Kiwi-Splitter_*.exe` e siga o assistente de instalação.
-- Em execuções seguintes, o próprio aplicativo verifica **no máximo uma vez por dia** se há versão mais recente nas Releases e oferece baixar/instalar (é possível recusar e continuar usando a versão atual).
 
-### Gerar instalador localmente (Pynsist)
-- Clone o repositório e instale as dependências do projeto.
-- Execute o script de build (incrementa a versão **antes** de compilar, como no Kiwiscribe):
-  - `.\build_kiwi_splitter_pynsist.ps1` — bump **patch** (padrão), ex.: `1.1.5` → `1.1.6`
-  - `.\build_kiwi_splitter_pynsist.ps1 minor` — bump **minor**
-  - `.\build_kiwi_splitter_pynsist.ps1 major` — bump **major**
-- A fonte única da versão é `APP_VERSION` em `kiwi_splitter.py`; `bump_version.py` sincroniza também `kiwi_splitter_pynsist.cfg` e `pyproject.toml`.
-- Ao final, o instalador será gerado em `build/nsis/` com nome no formato `Kiwi-Splitter_*.exe`.
-- Publique o `.exe` como asset de uma [GitHub Release](https://github.com/fgbkiwi/kiwi-splitter/releases) (tag `vX.Y.Z`), para que o download manual e a atualização automática funcionem.
+A aplicação está disponível apenas para Windows.
 
-> Observação: a pasta `build/` e o instalador `.exe` **não** são versionados no Git — apenas publicados nas Releases, para não sobrecarregar o repositório. Cada execução do build incrementa a versão; reexecutar sem querer continua avançando o patch.
+Baixe o instalador executável na seção [**Releases**](https://github.com/fgbkiwi/kiwi-splitter/releases/latest) deste repositório, execute o arquivo `Kiwi-Splitter_*.exe` e siga o assistente de instalação.
+
+Em execuções seguintes, o próprio aplicativo verifica **no máximo uma vez por dia** se há versão mais recente nas Releases e oferece baixar/instalar (é possível recusar e continuar usando a versão atual).
+
+## Para mantenedores e desenvolvedores
+
+Scripts de build, bump de versão e publicação de Release permanecem no repositório para reproduzir o instalador; não são necessários ao usuário final.
+
+### Dependências locais
+- Clone o repositório e sincronize o ambiente (`uv sync` ou equivalente com o `pyproject.toml` / `requirements.txt`).
+
+### Gerar e publicar o instalador (Pynsist)
+- Requisitos: NSIS, [GitHub CLI](https://cli.github.com/) (`gh`) autenticado (`gh auth login`) se for publicar.
+- Fonte única da versão: `APP_VERSION` em `kiwi_splitter.py` (`bump_version.py` sincroniza `kiwi_splitter_pynsist.cfg` e `pyproject.toml`).
+- Comandos:
+  - `.\build_kiwi_splitter_pynsist.ps1` — bump **patch** (padrão) + build + Release
+  - `.\build_kiwi_splitter_pynsist.ps1 minor` / `major` — bump correspondente + Release
+  - `.\build_kiwi_splitter_pynsist.ps1 -NoPublish` — só gera o `.exe` (testes locais)
+
+O instalador sai em `build/nsis/` e, sem `-NoPublish`, a Release aparece em [Releases](https://github.com/fgbkiwi/kiwi-splitter/releases/latest). A pasta `build/` e o `.exe` **não** entram no Git — só o asset da Release. Após uma Release real, faça commit/push do bump de versão.
+
