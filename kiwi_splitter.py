@@ -20,11 +20,11 @@ from PyQt6.QtWidgets import (
     QCheckBox, QTableWidget, QTableWidgetItem, QHeaderView, QTextEdit,
     QMessageBox, QFrame, QScrollArea, QProgressDialog
 )
-from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QIcon, QPixmap
+from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal, QRectF
+from PyQt6.QtGui import QIcon, QPixmap, QMovie, QPainter, QPainterPath
 
 APP_NAME = "Kiwi-Splitter"
-APP_VERSION = "1.1.7"
+APP_VERSION = "1.2.0"
 GITHUB_OWNER = "fgbkiwi"
 GITHUB_REPO = "kiwi-splitter"
 GITHUB_RELEASES_API = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
@@ -125,6 +125,21 @@ def estimate_tokens(text: str) -> int:
 
 def resource_path(filename: str) -> str:
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+
+def pixmap_with_rounded_corners(pixmap: QPixmap, radius: int = 28) -> QPixmap:
+    """Retorna o pixmap com cantos arredondados (áreas externas transparentes)."""
+    if pixmap.isNull() or radius <= 0:
+        return pixmap
+    rounded = QPixmap(pixmap.size())
+    rounded.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(rounded)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    path = QPainterPath()
+    path.addRoundedRect(QRectF(0, 0, pixmap.width(), pixmap.height()), float(radius), float(radius))
+    painter.setClipPath(path)
+    painter.drawPixmap(0, 0, pixmap)
+    painter.end()
+    return rounded
 
 class AppState:
     def __init__(self):
@@ -901,8 +916,12 @@ class MainWindow(QMainWindow):
             self.table.setItem(row_idx, 3, QTableWidgetItem(d.get("type", "Desconhecido")))
             
             p_label = "-" if d.get("id") == "capa" else f"{d.get('start_page',0)+1} a {d.get('end_page',0)+1}" if d.get("end_page", d.get("start_page",0)) != d.get("start_page",0) else f"{d.get('start_page',0)+1}"
-            self.table.setItem(row_idx, 4, QTableWidgetItem(p_label))
-            self.table.setItem(row_idx, 5, QTableWidgetItem(str(d.get("token_est", 0))))
+            pages_item = QTableWidgetItem(p_label)
+            pages_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self.table.setItem(row_idx, 4, pages_item)
+            tokens_item = QTableWidgetItem(str(d.get("token_est", 0)))
+            tokens_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self.table.setItem(row_idx, 5, tokens_item)
 
         self.table.blockSignals(False)
         self.update_totals()
@@ -1026,9 +1045,66 @@ def main():
     app_icon_path = resource_path("kiwi-splitter.ico")
     if os.path.exists(app_icon_path):
         app.setWindowIcon(QIcon(app_icon_path))
+
+    splash = None
+    movie = None
+    splash_path = resource_path("kiwi_splitter_splash.gif")
+    if os.path.exists(splash_path):
+        candidate_movie = QMovie(splash_path)
+        if candidate_movie.isValid():
+            movie = candidate_movie
+            movie.jumpToFrame(0)
+
+            splash = QWidget(
+                None,
+                Qt.WindowType.SplashScreen
+                | Qt.WindowType.FramelessWindowHint
+                | Qt.WindowType.WindowStaysOnTopHint,
+            )
+            splash.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+            splash.setStyleSheet("background: transparent; border: none; margin: 0; padding: 0;")
+            splash_layout = QVBoxLayout(splash)
+            splash_layout.setContentsMargins(0, 0, 0, 0)
+            splash_layout.setSpacing(0)
+            splash_label = QLabel(splash)
+            splash_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            splash_label.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+            splash_label.setStyleSheet("background: transparent; border: none; margin: 0; padding: 0;")
+            splash_layout.addWidget(splash_label)
+
+            corner_radius = 28
+
+            def _update_splash_frame(_frame_number: int = 0):
+                frame = movie.currentPixmap()
+                if frame.isNull():
+                    return
+                rounded = pixmap_with_rounded_corners(frame, corner_radius)
+                splash_label.setPixmap(rounded)
+                splash.resize(rounded.size())
+
+            movie.frameChanged.connect(_update_splash_frame)
+            movie.start()
+            _update_splash_frame()
+            splash.show()
+            app.processEvents()
+        else:
+            movie = None
+
     win = MainWindow()
-    win.show()
-    QTimer.singleShot(1200, win.schedule_update_check)
+
+    def _show_main_window():
+        if movie is not None:
+            movie.stop()
+        win.show()
+        if splash is not None:
+            splash.close()
+        QTimer.singleShot(1200, win.schedule_update_check)
+
+    if splash is not None:
+        QTimer.singleShot(3000, _show_main_window)
+    else:
+        _show_main_window()
+
     sys.exit(app.exec())
 
 if __name__ == "__main__":
