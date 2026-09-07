@@ -1,12 +1,12 @@
-# PDF Splitting Tool (Otimizado para PJe-JT)
+# PDF Splitting Tool (Otimizado para PJe-JT e LLMs)
 
 ## O que é este script?
-O `kiwi_splitter.py` é uma aplicação enxuta e especializada para redimensionamento, particionamento e preservação nativa de PDFs. Seu objetivo principal é viabilizar o envio de grandes processos a LLMs como o Gemini 3.1 Pro, sem esgotar as regras de limite (usualmente 50 MB de tamanho e 1 milhão de tokens no Google AI Studio). Esta aplicação foi desenvolvida exclusivamente para manipulação de PDFs gerados pelo Processo Judicial Eletrônico da Justiça do Traabalho (PJe-JT). O sumário gerado pelo PJe-JT ao final do PDF é utilizado nesta aplicação como um seletor de documentos, com contagem estimada de tokens em tempo real, para que o usuário possa dimensionar apropriadamente o arquivo processado a ser enviado ao LLM.
+O `kiwi_splitter.py` é uma aplicação enxuta e especializada para redimensionamento, particionamento e preservação nativa de PDFs. Seu objetivo principal é viabilizar o envio de grandes processos a LLMs sem esgotar as regras de limite de contexto e tamanho. Esta aplicação foi desenvolvida exclusivamente para manipulação de PDFs gerados pelo Processo Judicial Eletrônico da Justiça do Traabalho (PJe-JT). O sumário gerado pelo PJe-JT ao final do PDF é utilizado nesta aplicação como um seletor de documentos, com contagem estimada de tokens em tempo real, para que o usuário possa dimensionar apropriadamente o arquivo processado a ser enviado ao LLM.
 
 ## Funcionalidades Chave:
 
 - **Automação de Divisão Baseada em Peso**: Se você submeter um ou mais documentos gigantes originários do processo com tamanho na casa de cem Megabytes ou mais, a configuração automática do aplicativo se encarrega de dividir em fatias ideais. Cada PDF será segmentado progressivamente sem que nenhuma fatia jamais exceda **45 MB**.
-- **Mantém a Contagem de Tokens**: Os cálculos analíticos de tamanho do documento (em tokens LLM) foram deixados intactos via script tiktoken interno para consistência visual do seu projeto inicial.
+- **Mantém a Contagem de Tokens**: Os cálculos analíticos de tamanho do documento (em tokens LLM) foram deixados intactos via script tiktoken interno para manter a previsibilidade do recorte.
 - **Botão Inteligente de Marcação Geral**: Você pediu e agora acima da lista do Sumário há um alternador global `Selecionar Todos` simplificando a logística.
 - **Log Persistente**: Logs idênticos aos scripts antecessores.
 
@@ -31,17 +31,30 @@ A partir da versão **1.1.0**, o script também gera automaticamente um arquivo 
 ## Atualizações em estudo
 * **Conversão para Markdown**
 * **OCR de tabelas, imagens e documentos manuscritos**
-- Estamos testando várias bibliotecas e LLMs para encontrar o balanço ideal de performance e confiabilidade, com ou sem processamento por GPU. Aceitamos sugestões!
+- Estamos testando várias bibliotecas e LLMs para encontrar o balanço ideal de performance e confiabilidade, com ou sem processamento por GPU. Em breve indicaremos o link de um novo projeto com estas funcionalidades.
 
 ## Instalação
-### Usuário final (recomendado)
-- A aplicação está disponível apenas para Windows.
-- Baixe o instalador `.exe` na página de **Releases** do repositório GitHub.
-- Execute o arquivo `Kiwi-Splitter_*.exe` e siga o assistente de instalação.
 
-### Gerar instalador localmente (Pynsist)
-- Clone o repositório e instale as dependências do projeto.
-- Execute o script `build_kiwi_splitter_pynsist.ps1`.
-- Ao final, o instalador será gerado em `build/nsis/` com nome no formato `Kiwi-Splitter_*.exe`.
+A aplicação está disponível apenas para Windows.
 
-> Observação: a pasta `build/` é artefato de compilação local e normalmente não é versionada no Git.
+Baixe o instalador executável na seção [**Releases**](https://github.com/fgbkiwi/kiwi-splitter/releases/latest) deste repositório, execute o arquivo `Kiwi-Splitter_*.exe` e siga o assistente de instalação.
+
+Em execuções seguintes, o próprio aplicativo verifica **no máximo uma vez por dia** se há versão mais recente nas Releases e oferece baixar/instalar (é possível recusar e continuar usando a versão atual).
+
+## Para mantenedores e desenvolvedores
+
+Scripts de build, bump de versão e publicação de Release permanecem no repositório para reproduzir o instalador; não são necessários ao usuário final.
+
+### Dependências locais
+- Clone o repositório e sincronize o ambiente (`uv sync` ou equivalente com o `pyproject.toml` / `requirements.txt`).
+
+### Gerar e publicar o instalador (Pynsist)
+- Requisitos: NSIS, [GitHub CLI](https://cli.github.com/) (`gh`) autenticado (`gh auth login`) se for publicar.
+- Fonte única da versão: `APP_VERSION` em `kiwi_splitter.py` (`bump_version.py` sincroniza `kiwi_splitter_pynsist.cfg` e `pyproject.toml`).
+- Comandos:
+  - `.\build_kiwi_splitter_pynsist.ps1` — bump **patch** (padrão) + build + Release
+  - `.\build_kiwi_splitter_pynsist.ps1 minor` / `major` — bump correspondente + Release
+  - `.\build_kiwi_splitter_pynsist.ps1 -NoPublish` — só gera o `.exe` (testes locais)
+
+O instalador sai em `build/nsis/` e, sem `-NoPublish`, a Release aparece em [Releases](https://github.com/fgbkiwi/kiwi-splitter/releases/latest). A pasta `build/` e o `.exe` **não** entram no Git — só o asset da Release. Após uma Release real, faça commit/push do bump de versão.
+

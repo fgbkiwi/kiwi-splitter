@@ -4,7 +4,12 @@ import re
 import time
 import json
 import gc
-from typing import List, Dict, Any
+import subprocess
+import tempfile
+import urllib.error
+import urllib.request
+from datetime import date
+from typing import List, Dict, Any, Optional, Tuple
 
 import pymupdf as fitz
 import tiktoken
@@ -13,12 +18,89 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QFileDialog, QProgressBar,
     QCheckBox, QTableWidget, QTableWidgetItem, QHeaderView, QTextEdit,
-    QMessageBox, QFrame, QScrollArea
+    QMessageBox, QFrame, QScrollArea, QProgressDialog
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal, QRectF
+from PyQt6.QtGui import QIcon, QPixmap, QMovie, QPainter, QPainterPath
+
+APP_NAME = "Kiwi-Splitter"
+APP_VERSION = "1.2.0"
+GITHUB_OWNER = "fgbkiwi"
+GITHUB_REPO = "kiwi-splitter"
+GITHUB_RELEASES_API = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
+GITHUB_RELEASES_PAGE = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
+UPDATE_STATE_DIR = os.path.join(
+    os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"),
+    APP_NAME,
+)
+UPDATE_CHECK_FILE = os.path.join(UPDATE_STATE_DIR, "update_check.json")
 
 def ts() -> str:
     return time.strftime("[%Y-%m-%d %H:%M:%S]")
+
+def parse_version(version: str) -> Tuple[int, ...]:
+    cleaned = (version or "").strip().lstrip("vV")
+    parts: List[int] = []
+    for chunk in cleaned.split("."):
+        digits = ""
+        for ch in chunk:
+            if ch.isdigit():
+                digits += ch
+            else:
+                break
+        parts.append(int(digits) if digits else 0)
+    return tuple(parts) if parts else (0,)
+
+def version_is_newer(remote: str, local: str) -> bool:
+    return parse_version(remote) > parse_version(local)
+
+def load_update_check_state() -> Dict[str, Any]:
+    try:
+        if os.path.exists(UPDATE_CHECK_FILE):
+            with open(UPDATE_CHECK_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data if isinstance(data, dict) else {}
+    except Exception:
+        pass
+    return {}
+
+def save_update_check_state(state: Dict[str, Any]) -> None:
+    try:
+        os.makedirs(UPDATE_STATE_DIR, exist_ok=True)
+        with open(UPDATE_CHECK_FILE, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2)
+    except Exception:
+        pass
+
+def should_check_for_updates_today() -> bool:
+    state = load_update_check_state()
+    return state.get("last_check_date") != date.today().isoformat()
+
+def mark_update_checked() -> None:
+    state = load_update_check_state()
+    state["last_check_date"] = date.today().isoformat()
+    save_update_check_state(state)
+
+def pick_installer_asset(assets: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    candidates = []
+    for asset in assets or []:
+        name = str(asset.get("name") or "")
+        url = asset.get("browser_download_url")
+        if not url:
+            continue
+        lower = name.lower()
+        if lower.endswith(".exe") and ("kiwi-splitter" in lower or "kiwi_splitter" in lower):
+            candidates.append(asset)
+    if not candidates:
+        for asset in assets or []:
+            name = str(asset.get("name") or "")
+            if name.lower().endswith(".exe") and asset.get("browser_download_url"):
+                candidates.append(asset)
+                break
+    if not candidates:
+        return None
+    candidates.sort(key=lambda a: (0 if "setup" in str(a.get("name", "")).lower() or "_" in str(a.get("name", "")) else 1, str(a.get("name", ""))))
+    return candidates[0]
 
 def normalize_desc(s: str) -> str:
     if not s: return ""
@@ -40,6 +122,24 @@ def estimate_tokens(text: str) -> int:
         words = len(re.findall(r"\S+", clean))
         chars = len(clean)
         return max(int(words * 1.3), int(chars / 4))
+
+def resource_path(filename: str) -> str:
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+
+def pixmap_with_rounded_corners(pixmap: QPixmap, radius: int = 28) -> QPixmap:
+    """Retorna o pixmap com cantos arredondados (áreas externas transparentes)."""
+    if pixmap.isNull() or radius <= 0:
+        return pixmap
+    rounded = QPixmap(pixmap.size())
+    rounded.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(rounded)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    path = QPainterPath()
+    path.addRoundedRect(QRectF(0, 0, pixmap.width(), pixmap.height()), float(radius), float(radius))
+    painter.setClipPath(path)
+    painter.drawPixmap(0, 0, pixmap)
+    painter.end()
+    return rounded
 
 class AppState:
     def __init__(self):
@@ -403,24 +503,136 @@ class SplitThread(QThread):
             print(traceback.format_exc())
             self.error_signal.emit(f"Erro fatal na divisão: {str(e)}")
 
+class UpdateCheckThread(QThread):
+    update_available = pyqtSignal(str, str, str)  # version, filename, download_url
+    check_failed = pyqtSignal(str)
+    check_finished = pyqtSignal()
+
+    def run(self):
+        checked_ok = False
+        try:
+            req = urllib.request.Request(
+                GITHUB_RELEASES_API,
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "User-Agent": f"{APP_NAME}/{APP_VERSION}",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+            checked_ok = True
+
+            remote_version = str(payload.get("tag_name") or payload.get("name") or "").strip()
+            if not remote_version:
+                return
+
+            asset = pick_installer_asset(payload.get("assets") or [])
+            if not asset:
+                return
+
+            download_url = str(asset.get("browser_download_url") or "")
+            filename = str(asset.get("name") or f"{APP_NAME}_{remote_version}.exe")
+            if download_url and version_is_newer(remote_version, APP_VERSION):
+                self.update_available.emit(remote_version.lstrip("vV"), filename, download_url)
+        except urllib.error.HTTPError as exc:
+            # 404 = ainda nao ha releases publicadas; conta como verificacao ok
+            if exc.code == 404:
+                checked_ok = True
+            else:
+                self.check_failed.emit(f"Falha ao verificar atualizações (HTTP {exc.code}).")
+        except Exception as exc:
+            self.check_failed.emit(f"Falha ao verificar atualizações: {exc}")
+        finally:
+            if checked_ok:
+                mark_update_checked()
+            self.check_finished.emit()
+
+class InstallerDownloadThread(QThread):
+    progress = pyqtSignal(int)
+    finished_ok = pyqtSignal(str)
+    failed = pyqtSignal(str)
+
+    def __init__(self, download_url: str, filename: str):
+        super().__init__()
+        self.download_url = download_url
+        self.filename = filename
+
+    def run(self):
+        dest_path = ""
+        try:
+            safe_name = os.path.basename(self.filename) or f"{APP_NAME}-update.exe"
+            dest_path = os.path.join(tempfile.gettempdir(), safe_name)
+            req = urllib.request.Request(
+                self.download_url,
+                headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"},
+            )
+            with urllib.request.urlopen(req, timeout=60) as resp, open(dest_path, "wb") as out:
+                total = int(resp.headers.get("Content-Length") or 0)
+                downloaded = 0
+                chunk_size = 1024 * 256
+                while True:
+                    chunk = resp.read(chunk_size)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                    downloaded += len(chunk)
+                    if total > 0:
+                        self.progress.emit(min(100, int(downloaded * 100 / total)))
+                    else:
+                        self.progress.emit(-1)
+            self.progress.emit(100)
+            self.finished_ok.emit(dest_path)
+        except Exception as exc:
+            try:
+                if dest_path and os.path.exists(dest_path):
+                    os.remove(dest_path)
+            except Exception:
+                pass
+            self.failed.emit(str(exc))
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Kiwi Splitter & Sanitizer")
+        self.setWindowTitle(f"Fracionador e Sanitizador de PDF (PJe) para LLMs — {APP_NAME} {APP_VERSION}")
         self.resize(1000, 800)
         self.state = AppState()
+        self.update_thread = None
+        self.download_thread = None
+        self.download_progress = None
+        app_icon_path = resource_path("kiwi-splitter.ico")
+        if os.path.exists(app_icon_path):
+            self.setWindowIcon(QIcon(app_icon_path))
         
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
         layout = QVBoxLayout(main_widget)
         
         # Sec 0: Application VISUAL Title
-        lbl_title = QLabel("<b>Fracionador e Sanitizador de PDF (PJe) para Google AI Studio</b>")
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(12)
+
+        lbl_title = QLabel(
+            "<b>Fracionador e Sanitizador de PDF (PJe) para LLMs</b>"
+            f"<br><span style='font-size:10pt;font-weight:normal;'>Versão {APP_VERSION}</span>"
+        )
         font = lbl_title.font()
         font.setPointSize(font.pointSize() + 2)
         lbl_title.setFont(font)
-        lbl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(lbl_title)
+        lbl_title.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+
+        lbl_logo = QLabel()
+        lbl_logo.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
+        logo_pixmap = QPixmap(resource_path("KiwiSplitterSquared.png"))
+        if not logo_pixmap.isNull():
+            lbl_logo.setPixmap(logo_pixmap.scaledToHeight(56, Qt.TransformationMode.SmoothTransformation))
+
+        header_row.addStretch(1)
+        header_row.addWidget(lbl_title)
+        header_row.addStretch(1)
+        header_row.addWidget(lbl_logo)
+        layout.addLayout(header_row)
 
         line_title = QFrame()
         line_title.setFrameShape(QFrame.Shape.HLine)
@@ -502,6 +714,117 @@ class MainWindow(QMainWindow):
         
         self.analyze_thread = None
         self.split_thread = None
+
+    def schedule_update_check(self):
+        if not should_check_for_updates_today():
+            return
+        self.update_thread = UpdateCheckThread()
+        self.update_thread.update_available.connect(self.on_update_available)
+        self.update_thread.check_failed.connect(self.on_update_check_failed)
+        self.update_thread.start()
+
+    def on_update_check_failed(self, message: str):
+        self.log(message)
+
+    def on_update_available(self, remote_version: str, filename: str, download_url: str):
+        self.log(f"Nova versão disponível: {remote_version} (atual: {APP_VERSION}).")
+        reply = QMessageBox.question(
+            self,
+            "Atualização disponível",
+            (
+                f"Há uma nova versão do {APP_NAME}.\n\n"
+                f"Versão instalada: {APP_VERSION}\n"
+                f"Versão disponível: {remote_version}\n\n"
+                "Deseja baixar e executar o instalador agora?\n"
+                f"(Também disponível em {GITHUB_RELEASES_PAGE})"
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            self.log("Atualização adiada pelo usuário.")
+            return
+
+        self.download_progress = QProgressDialog(
+            f"Baixando {filename}...",
+            "Cancelar",
+            0,
+            100,
+            self,
+        )
+        self.download_progress.setWindowTitle("Download do instalador")
+        self.download_progress.setWindowModality(Qt.WindowModality.WindowModal)
+        self.download_progress.setMinimumDuration(0)
+        self.download_progress.setValue(0)
+        self.download_progress.canceled.connect(self.on_download_canceled)
+
+        self.download_thread = InstallerDownloadThread(download_url, filename)
+        self.download_thread.progress.connect(self.on_download_progress)
+        self.download_thread.finished_ok.connect(self.on_download_finished)
+        self.download_thread.failed.connect(self.on_download_failed)
+        self.download_thread.start()
+
+    def on_download_progress(self, percent: int):
+        if not self.download_progress:
+            return
+        if percent < 0:
+            self.download_progress.setRange(0, 0)
+        else:
+            if self.download_progress.maximum() == 0:
+                self.download_progress.setRange(0, 100)
+            self.download_progress.setValue(percent)
+
+    def on_download_canceled(self):
+        if self.download_thread and self.download_thread.isRunning():
+            self.download_thread.terminate()
+            self.download_thread.wait(2000)
+        self.log("Download do instalador cancelado.")
+
+    def on_download_failed(self, message: str):
+        if self.download_progress:
+            self.download_progress.close()
+            self.download_progress = None
+        self.log(f"Falha no download do instalador: {message}")
+        QMessageBox.warning(
+            self,
+            "Falha no download",
+            (
+                f"Não foi possível baixar o instalador:\n{message}\n\n"
+                f"Baixe manualmente em:\n{GITHUB_RELEASES_PAGE}"
+            ),
+        )
+
+    def on_download_finished(self, installer_path: str):
+        if self.download_progress:
+            self.download_progress.close()
+            self.download_progress = None
+        self.log(f"Instalador baixado em: {installer_path}")
+        try:
+            subprocess.Popen([installer_path], shell=False)
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                "Falha ao abrir instalador",
+                (
+                    f"O arquivo foi baixado, mas não foi possível abri-lo:\n{exc}\n\n"
+                    f"Abra manualmente:\n{installer_path}"
+                ),
+            )
+            return
+
+        quit_reply = QMessageBox.question(
+            self,
+            "Instalador iniciado",
+            (
+                "O instalador foi iniciado.\n\n"
+                "Recomenda-se fechar o Kiwi-Splitter antes de concluir a instalação.\n"
+                "Deseja fechar o aplicativo agora?"
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if quit_reply == QMessageBox.StandardButton.Yes:
+            self.close()
 
     def log(self, msg: str):
         line = f"{ts()} {msg}"
@@ -593,8 +916,12 @@ class MainWindow(QMainWindow):
             self.table.setItem(row_idx, 3, QTableWidgetItem(d.get("type", "Desconhecido")))
             
             p_label = "-" if d.get("id") == "capa" else f"{d.get('start_page',0)+1} a {d.get('end_page',0)+1}" if d.get("end_page", d.get("start_page",0)) != d.get("start_page",0) else f"{d.get('start_page',0)+1}"
-            self.table.setItem(row_idx, 4, QTableWidgetItem(p_label))
-            self.table.setItem(row_idx, 5, QTableWidgetItem(str(d.get("token_est", 0))))
+            pages_item = QTableWidgetItem(p_label)
+            pages_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self.table.setItem(row_idx, 4, pages_item)
+            tokens_item = QTableWidgetItem(str(d.get("token_est", 0)))
+            tokens_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self.table.setItem(row_idx, 5, tokens_item)
 
         self.table.blockSignals(False)
         self.update_totals()
@@ -690,6 +1017,14 @@ class MainWindow(QMainWindow):
             if getattr(self, 'split_thread', None) and self.split_thread.isRunning():
                 self.split_thread.terminate()
                 self.split_thread.wait()
+
+            if getattr(self, 'update_thread', None) and self.update_thread.isRunning():
+                self.update_thread.terminate()
+                self.update_thread.wait(1000)
+
+            if getattr(self, 'download_thread', None) and self.download_thread.isRunning():
+                self.download_thread.terminate()
+                self.download_thread.wait(1000)
                 
             # Limpa todos os arrays que poderiam reter caches binários na memória do PyMuPDF
             self.state.documents.clear()
@@ -707,8 +1042,69 @@ class MainWindow(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    app_icon_path = resource_path("kiwi-splitter.ico")
+    if os.path.exists(app_icon_path):
+        app.setWindowIcon(QIcon(app_icon_path))
+
+    splash = None
+    movie = None
+    splash_path = resource_path("kiwi_splitter_splash.gif")
+    if os.path.exists(splash_path):
+        candidate_movie = QMovie(splash_path)
+        if candidate_movie.isValid():
+            movie = candidate_movie
+            movie.jumpToFrame(0)
+
+            splash = QWidget(
+                None,
+                Qt.WindowType.SplashScreen
+                | Qt.WindowType.FramelessWindowHint
+                | Qt.WindowType.WindowStaysOnTopHint,
+            )
+            splash.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+            splash.setStyleSheet("background: transparent; border: none; margin: 0; padding: 0;")
+            splash_layout = QVBoxLayout(splash)
+            splash_layout.setContentsMargins(0, 0, 0, 0)
+            splash_layout.setSpacing(0)
+            splash_label = QLabel(splash)
+            splash_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            splash_label.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+            splash_label.setStyleSheet("background: transparent; border: none; margin: 0; padding: 0;")
+            splash_layout.addWidget(splash_label)
+
+            corner_radius = 28
+
+            def _update_splash_frame(_frame_number: int = 0):
+                frame = movie.currentPixmap()
+                if frame.isNull():
+                    return
+                rounded = pixmap_with_rounded_corners(frame, corner_radius)
+                splash_label.setPixmap(rounded)
+                splash.resize(rounded.size())
+
+            movie.frameChanged.connect(_update_splash_frame)
+            movie.start()
+            _update_splash_frame()
+            splash.show()
+            app.processEvents()
+        else:
+            movie = None
+
     win = MainWindow()
-    win.show()
+
+    def _show_main_window():
+        if movie is not None:
+            movie.stop()
+        win.show()
+        if splash is not None:
+            splash.close()
+        QTimer.singleShot(1200, win.schedule_update_check)
+
+    if splash is not None:
+        QTimer.singleShot(3000, _show_main_window)
+    else:
+        _show_main_window()
+
     sys.exit(app.exec())
 
 if __name__ == "__main__":
