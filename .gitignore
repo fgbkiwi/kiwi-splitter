@@ -6,3 +6,4 @@ dist_installer/
 build/
 installer/
 *.log
+selections_kiwi_splitter.json
