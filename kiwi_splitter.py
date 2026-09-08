@@ -18,13 +18,19 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QFileDialog, QProgressBar,
     QCheckBox, QTableWidget, QTableWidgetItem, QHeaderView, QTextEdit,
-    QMessageBox, QFrame, QScrollArea, QProgressDialog
+    QMessageBox, QFrame, QScrollArea, QProgressDialog, QSizePolicy
 )
-from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal, QRectF
+from PyQt6.QtCore import (
+    Qt, QThread, QTimer, pyqtSignal, QRectF,
+    QPropertyAnimation, QEasingCurve, QAbstractAnimation,
+)
 from PyQt6.QtGui import QIcon, QPixmap, QMovie, QPainter, QPainterPath
 
+# Altura máxima padrão do Qt (remove travas de min/max após animação).
+_QWIDGETSIZE_MAX = 16777215
+
 APP_NAME = "Kiwi-Splitter"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.2.1"
 GITHUB_OWNER = "fgbkiwi"
 GITHUB_REPO = "kiwi-splitter"
 GITHUB_RELEASES_API = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
@@ -606,7 +612,18 @@ class MainWindow(QMainWindow):
         
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
-        layout = QVBoxLayout(main_widget)
+        self.main_layout = QVBoxLayout(main_widget)
+        layout = self.main_layout
+
+        # Estado do painel de log (visível por padrão) e timer de debounce do resize.
+        self._log_visible = True
+        self._log_stretch_visible = 2
+        self._table_stretch_visible = 3
+        self._log_anim = None
+        self._resize_debounce_ms = 80
+        self._resize_timer = QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.timeout.connect(self._on_debounced_resize)
         
         # Sec 0: Application VISUAL Title
         header_row = QHBoxLayout()
@@ -701,19 +718,169 @@ class MainWindow(QMainWindow):
         self.table.setHorizontalHeaderLabels(["Incluir", "ID PJe", "Documento", "Tipo", "Páginas", "Tokens Est."])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        layout.addWidget(self.table)
+        self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.table.setMinimumHeight(120)
+        layout.addWidget(self.table, self._table_stretch_visible)
         
         self.lbl_totals = QLabel("Selecionados: 0 documentos | Total Estimado: ~0 tokens")
         layout.addWidget(self.lbl_totals)
         
-        # Sec 4: Logs
-        layout.addWidget(QLabel("<b>Log de Execução:</b>"))
+        # Sec 4: Logs (cabeçalho fixo + container animável)
+        log_header = QHBoxLayout()
+        log_header.setContentsMargins(0, 0, 0, 0)
+        log_header.addWidget(QLabel("<b>Log de Execução:</b>"))
+        log_header.addStretch(1)
+        self.btn_toggle_log = QPushButton()
+        self.btn_toggle_log.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_toggle_log.setToolTip("Alternar a exibição do log de execução")
+        self.btn_toggle_log.setStyleSheet(
+            "QPushButton {"
+            "  background-color: #E1BEE7;"
+            "  color: #4A148C;"
+            "  border: 1px solid #CE93D8;"
+            "  border-radius: 4px;"
+            "  padding: 6px 14px;"
+            "  font-weight: bold;"
+            "}"
+            "QPushButton:hover {"
+            "  background-color: #CE93D8;"
+            "}"
+            "QPushButton:pressed {"
+            "  background-color: #BA68C8;"
+            "}"
+        )
+        self.btn_toggle_log.clicked.connect(self.toggle_log_visibility)
+        log_header.addWidget(self.btn_toggle_log)
+        layout.addLayout(log_header)
+
+        self.log_container = QWidget()
+        self.log_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.log_container.setMinimumHeight(0)
+        log_container_layout = QVBoxLayout(self.log_container)
+        log_container_layout.setContentsMargins(0, 0, 0, 0)
+        log_container_layout.setSpacing(0)
         self.log_area = QTextEdit()
         self.log_area.setReadOnly(True)
-        layout.addWidget(self.log_area)
+        self.log_area.setMinimumHeight(100)
+        self.log_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        log_container_layout.addWidget(self.log_area)
+        layout.addWidget(self.log_container, self._log_stretch_visible)
+
+        self._log_anim = QPropertyAnimation(self.log_container, b"maximumHeight", self)
+        self._log_anim.setDuration(280)
+        self._log_anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        self._log_anim.finished.connect(self._on_log_anim_finished)
+
+        self._update_toggle_log_button()
         
         self.analyze_thread = None
         self.split_thread = None
+
+    def _update_toggle_log_button(self):
+        """Atualiza ícone/texto do botão conforme o estado atual do log."""
+        if self._log_visible:
+            self.btn_toggle_log.setText("▼  Ocultar log")
+            self.btn_toggle_log.setToolTip("Ocultar o log de execução")
+        else:
+            self.btn_toggle_log.setText("▶  Exibir log")
+            self.btn_toggle_log.setToolTip("Exibir o log de execução")
+
+    def _compute_log_target_height(self) -> int:
+        """Calcula altura alvo do log com base no espaço flexível disponível."""
+        flex = self.table.height() + max(self.log_container.height(), 0)
+        if flex < 200:
+            flex = max(220, int(self.height() * 0.38))
+        target = int(flex * 0.36)
+        return max(120, min(target, 420))
+
+    def _lock_log_container_hidden(self):
+        """Trava a altura do container do log em 0 (usado com log oculto)."""
+        self.main_layout.setStretchFactor(self.log_container, 0)
+        self.main_layout.setStretchFactor(self.table, 1)
+        self.log_container.setMinimumHeight(0)
+        self.log_container.setMaximumHeight(0)
+        self.log_area.setMinimumHeight(0)
+
+    def _unlock_log_container_visible(self):
+        """Libera restrições de altura para o log participar do layout."""
+        self.log_area.setMinimumHeight(100)
+        self.log_container.setMinimumHeight(0)
+        self.log_container.setMaximumHeight(_QWIDGETSIZE_MAX)
+        self.main_layout.setStretchFactor(self.table, self._table_stretch_visible)
+        self.main_layout.setStretchFactor(self.log_container, self._log_stretch_visible)
+
+    def _on_log_anim_finished(self):
+        if self._log_visible:
+            self._unlock_log_container_visible()
+            self._distribute_vertical_space()
+        else:
+            self._lock_log_container_hidden()
+
+    def toggle_log_visibility(self):
+        """Alterna a exibição do log com animação suave de altura."""
+        if self._log_anim is not None and self._log_anim.state() == QAbstractAnimation.State.Running:
+            self._log_anim.stop()
+
+        if self._log_visible:
+            start_h = max(self.log_container.height(), 1)
+            self._log_visible = False
+            self._update_toggle_log_button()
+            self.main_layout.setStretchFactor(self.log_container, 0)
+            self.main_layout.setStretchFactor(self.table, 1)
+            self.log_container.setMaximumHeight(start_h)
+            self._log_anim.setStartValue(start_h)
+            self._log_anim.setEndValue(0)
+            self._log_anim.start()
+        else:
+            target_h = self._compute_log_target_height()
+            self._log_visible = True
+            self._update_toggle_log_button()
+            self.log_area.setMinimumHeight(100)
+            self.log_container.setMinimumHeight(0)
+            self.log_container.setMaximumHeight(0)
+            self.main_layout.setStretchFactor(self.table, self._table_stretch_visible)
+            self.main_layout.setStretchFactor(self.log_container, self._log_stretch_visible)
+            self._log_anim.setStartValue(0)
+            self._log_anim.setEndValue(target_h)
+            self._log_anim.start()
+
+    def _distribute_vertical_space(self):
+        """Distribui o espaço vertical entre a tabela e o log quando ambos estão visíveis."""
+        if not self._log_visible:
+            return
+        if self._log_anim is not None and self._log_anim.state() == QAbstractAnimation.State.Running:
+            return
+
+        available = self.table.height() + self.log_container.height()
+        if available < 180:
+            return
+
+        log_h = max(120, int(available * 0.36))
+        log_h = min(log_h, int(available * 0.45))
+        table_h = available - log_h
+        if table_h < 120:
+            table_h = 120
+            log_h = max(100, available - table_h)
+
+        self.table.setMinimumHeight(min(120, table_h))
+        self.log_area.setMinimumHeight(min(100, log_h))
+        self.log_container.setMinimumHeight(0)
+        self.log_container.setMaximumHeight(_QWIDGETSIZE_MAX)
+        self.main_layout.setStretchFactor(self.table, self._table_stretch_visible)
+        self.main_layout.setStretchFactor(self.log_container, self._log_stretch_visible)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._resize_timer.start(self._resize_debounce_ms)
+
+    def _on_debounced_resize(self):
+        """Aplica política de altura após resize, com debounce para evitar recálculos excessivos."""
+        if self._log_anim is not None and self._log_anim.state() == QAbstractAnimation.State.Running:
+            return
+        if not self._log_visible:
+            self._lock_log_container_hidden()
+            return
+        self._distribute_vertical_space()
 
     def schedule_update_check(self):
         if not should_check_for_updates_today():
