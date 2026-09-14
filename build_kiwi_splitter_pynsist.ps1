@@ -29,8 +29,8 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ScriptDir
 
 $APP_NAME     = "Kiwi-Splitter"
-$ICON_SOURCE  = "KiwiSplitterSquared.png"
-$ICON_COPY    = "kiwi-splitter.ico"
+$ICON_FILE    = "kiwi-splitter.ico"
+$LOGO_PNG     = "KiwiSplitterSquared.png"
 $CONFIG_FILE  = "kiwi_splitter_pynsist.cfg"
 $BUMP_SCRIPT  = "bump_version.py"
 $PYTHON_EXE   = ".venv\Scripts\python.exe"
@@ -50,8 +50,13 @@ if (-not (Test-Path $BUMP_SCRIPT)) {
     exit 1
 }
 
-if (-not (Test-Path $ICON_SOURCE)) {
-    Write-Error "Imagem de icone nao encontrada: '$ICON_SOURCE'."
+if (-not (Test-Path $ICON_FILE)) {
+    Write-Error "Icone do aplicativo nao encontrado: '$ICON_FILE'."
+    exit 1
+}
+
+if (-not (Test-Path $LOGO_PNG)) {
+    Write-Error "Logo PNG nao encontrado: '$LOGO_PNG'."
     exit 1
 }
 
@@ -95,49 +100,7 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 Write-Host "  pynsist OK" -ForegroundColor Gray
-
-# Gerar icone a partir do PNG base para usar no app e no instalador
-Add-Type -AssemblyName System.Drawing
-$sourceImage = [System.Drawing.Image]::FromFile((Join-Path $ScriptDir $ICON_SOURCE))
-try {
-    $iconSize = 256
-    $bitmap = New-Object System.Drawing.Bitmap -ArgumentList $iconSize, $iconSize
-    try {
-        $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-        try {
-            $graphics.Clear([System.Drawing.Color]::Transparent)
-            $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
-            $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
-            $graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
-            $graphics.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighQuality
-
-            $scale = [Math]::Min($iconSize / $sourceImage.Width, $iconSize / $sourceImage.Height)
-            $drawWidth = [int][Math]::Round($sourceImage.Width * $scale)
-            $drawHeight = [int][Math]::Round($sourceImage.Height * $scale)
-            $offsetX = [int][Math]::Round(($iconSize - $drawWidth) / 2)
-            $offsetY = [int][Math]::Round(($iconSize - $drawHeight) / 2)
-            $graphics.DrawImage($sourceImage, $offsetX, $offsetY, $drawWidth, $drawHeight)
-        } finally {
-            $graphics.Dispose()
-        }
-
-        $icon = [System.Drawing.Icon]::FromHandle($bitmap.GetHicon())
-        try {
-            $stream = [System.IO.File]::Open((Join-Path $ScriptDir $ICON_COPY), [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write)
-            try {
-                $icon.Save($stream)
-            } finally {
-                $stream.Dispose()
-            }
-        } finally {
-            $icon.Dispose()
-        }
-    } finally {
-        $bitmap.Dispose()
-    }
-} finally {
-    $sourceImage.Dispose()
-}
+Write-Host "  Usando icone: $ICON_FILE" -ForegroundColor Gray
 
 # Limpar saida anterior para validar que o .exe atual veio deste build
 if (Test-Path "build\nsis") {
@@ -164,8 +127,8 @@ if (-not (Test-Path $INSTALLER)) {
     exit 1
 }
 
-if (Test-Path (Join-Path $ScriptDir $ICON_SOURCE)) {
-    Copy-Item -Force (Join-Path $ScriptDir $ICON_SOURCE) (Join-Path $ScriptDir 'build\nsis\KiwiSplitterSquared.png')
+if (Test-Path (Join-Path $ScriptDir $LOGO_PNG)) {
+    Copy-Item -Force (Join-Path $ScriptDir $LOGO_PNG) (Join-Path $ScriptDir 'build\nsis\KiwiSplitterSquared.png')
 }
 
 Write-Host ""
