@@ -30,7 +30,7 @@ from PyQt6.QtGui import QIcon, QPixmap, QMovie, QPainter, QPainterPath
 _QWIDGETSIZE_MAX = 16777215
 
 APP_NAME = "Kiwi-Splitter"
-APP_VERSION = "1.2.1"
+APP_VERSION = "1.2.2"
 GITHUB_OWNER = "fgbkiwi"
 GITHUB_REPO = "kiwi-splitter"
 GITHUB_RELEASES_API = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
@@ -196,11 +196,41 @@ class SumarioParser:
         self._log(f"Sumário: peças identificadas={len(final)}.")
         return final
 
+    def _find_sumario_start_page(self, doc) -> Optional[int]:
+        """Localiza a 1ª página do índice PJe-JT pelo cabeçalho SUMÁRIO (não por tabelas)."""
+        # Processos longos podem ter sumário extenso; busca nas últimas 120 páginas.
+        start_search = max(0, len(doc) - 120)
+        found: Optional[int] = None
+        heading_re = re.compile(r"\bSUM[AÁ]RIO\b", re.IGNORECASE)
+        for i in range(start_search, len(doc)):
+            raw = doc[i].get_text("text") or ""
+            head = normalize_desc(raw[:500]).upper()
+            if not heading_re.search(head):
+                continue
+            # Exige SUMÁRIO no início da página ou acompanhado de "Documentos" (tabela do PJe).
+            if heading_re.match(head) or (
+                "DOCUMENTO" in head and ("ID" in head or "ID." in head)
+            ):
+                if found is None or i < found:
+                    found = i
+        return found
+
     def _parse_with_pymupdf(self) -> List[Dict[str, Any]]:
         out: List[Dict[str, Any]] = []
+        self._sumario_start_page: Optional[int] = None
         with fitz.open(self.pdf_path) as doc:
-            start_search = max(0, len(doc) - 20)
-            for i in range(start_search, len(doc)):
+            self._sumario_start_page = self._find_sumario_start_page(doc)
+            if self._sumario_start_page is not None:
+                self._log(
+                    f"Sumário: cabeçalho encontrado na página {self._sumario_start_page + 1}."
+                )
+                # Índice oficial: só as páginas do sumário (evita protocolo/anexos no fim).
+                page_range = range(self._sumario_start_page, len(doc))
+            else:
+                self._log("Sumário: cabeçalho não encontrado; fallback nas últimas 20 páginas.")
+                page_range = range(max(0, len(doc) - 20), len(doc))
+
+            for i in page_range:
                 page = doc[i]
                 links = []
                 try:
@@ -307,9 +337,15 @@ class SumarioParser:
                                                 break
                         except Exception:
                             dest_page = -1
+
+                        # Destino dentro do próprio sumário é inválido (ID só aparece no índice).
+                        sumario_start = self._sumario_start_page
+                        if dest_page != -1 and sumario_start is not None and dest_page >= sumario_start:
+                            dest_page = -1
                             
                         if dest_page == -1:
-                            for pnum in range(0, len(doc)):
+                            search_end = sumario_start if sumario_start is not None else len(doc)
+                            for pnum in range(0, search_end):
                                 if pnum not in self._page_text_cache:
                                     self._page_text_cache[pnum] = doc[pnum].get_text("text")
                                 pg_txt = self._page_text_cache[pnum].lower()
@@ -340,11 +376,43 @@ class SumarioParser:
             return docs
         with fitz.open(self.pdf_path) as doc:
             total_pages = len(doc)
-            docs.sort(key=lambda x: x["start_page"])
-            for i in range(len(docs) - 1):
-                docs[i]["end_page"] = docs[i+1]["start_page"] - 1
-            docs[-1]["end_page"] = total_pages - 1
-            if docs and docs[0]["start_page"] > 0:
+            sumario_start = getattr(self, "_sumario_start_page", None)
+
+            # Páginas do sumário PJe-JT (final do PDF) viram peça própria e travada.
+            sumario_item = {
+                "id": "sumario",
+                "start_page": sumario_start if sumario_start is not None else 0,
+                "end_page": total_pages - 1,
+                "type": "SUMÁRIO",
+                "display_name": "Sumário do Processo (PJe-JT)",
+                "description": "Sumário do Processo (PJe-JT)",
+                "token_est": 0,
+                "selected": True,
+                "locked": True,
+            }
+            if sumario_start is not None and 0 <= sumario_start < total_pages:
+                docs = [d for d in docs if d.get("start_page", -1) < sumario_start]
+                if docs:
+                    docs.sort(key=lambda x: x["start_page"])
+                    for i in range(len(docs) - 1):
+                        docs[i]["end_page"] = docs[i + 1]["start_page"] - 1
+                    last_end = sumario_start - 1
+                    if last_end < docs[-1]["start_page"]:
+                        last_end = docs[-1]["start_page"]
+                    docs[-1]["end_page"] = last_end
+                sumario_item["start_page"] = sumario_start
+                docs.append(sumario_item)
+                self._log(
+                    f"Sumário: páginas {sumario_start + 1}–{total_pages} "
+                    "incluídas como item fixo (sempre selecionado)."
+                )
+            else:
+                docs.sort(key=lambda x: x["start_page"])
+                for i in range(len(docs) - 1):
+                    docs[i]["end_page"] = docs[i + 1]["start_page"] - 1
+                docs[-1]["end_page"] = total_pages - 1
+
+            if docs and docs[0].get("id") != "sumario" and docs[0]["start_page"] > 0:
                 capa_end = docs[0]["start_page"] - 1
                 if capa_end >= 0:
                     capa_doc = {
@@ -1061,7 +1129,10 @@ class MainWindow(QMainWindow):
         self.table.setRowCount(0)
         
         for d in docs:
-            d["selected"] = prev_selections.get(d["id"], True)
+            if d.get("locked"):
+                d["selected"] = True
+            else:
+                d["selected"] = prev_selections.get(d["id"], True)
             row_idx = self.table.rowCount()
             self.table.insertRow(row_idx)
             
@@ -1071,9 +1142,12 @@ class MainWindow(QMainWindow):
             chk_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
             chk = QCheckBox()
             chk.setChecked(d["selected"])
-            
-            # Use lambda with default arg to bind scope correctly
-            chk.stateChanged.connect(lambda state, doc=d: self.on_doc_toggled(doc, state))
+            if d.get("locked"):
+                chk.setEnabled(False)
+                chk.setToolTip("O sumário do PJe-JT é sempre incluído e não pode ser removido.")
+            else:
+                # Use lambda with default arg to bind scope correctly
+                chk.stateChanged.connect(lambda state, doc=d: self.on_doc_toggled(doc, state))
             chk_layout.addWidget(chk)
             self.table.setCellWidget(row_idx, 0, chk_widget)
             
@@ -1098,10 +1172,17 @@ class MainWindow(QMainWindow):
         self.btn_split.setEnabled(True)
 
     def on_doc_toggled(self, doc, state):
+        if doc.get("locked"):
+            doc["selected"] = True
+            self.update_totals()
+            return
         doc["selected"] = bool(state)
         self.update_totals()
 
     def update_totals(self):
+        for d in self.state.documents:
+            if d.get("locked"):
+                d["selected"] = True
         selected_count = sum(1 for d in self.state.documents if d.get("selected"))
         toks = sum(int(d.get("token_est", 0)) for d in self.state.documents if d.get("selected"))
         all_checked = (selected_count == len(self.state.documents)) if self.state.documents else False
@@ -1120,6 +1201,15 @@ class MainWindow(QMainWindow):
         is_checked = bool(state)
         self.table.blockSignals(True)
         for i, d in enumerate(self.state.documents):
+            if d.get("locked"):
+                d["selected"] = True
+                widget = self.table.cellWidget(i, 0)
+                if widget:
+                    chk = widget.layout().itemAt(0).widget()
+                    chk.blockSignals(True)
+                    chk.setChecked(True)
+                    chk.blockSignals(False)
+                continue
             d["selected"] = is_checked
             widget = self.table.cellWidget(i, 0)
             if widget:
@@ -1132,6 +1222,11 @@ class MainWindow(QMainWindow):
         if not self.state.documents:
             self.log("Analise a estrutura primeiro.")
             return
+
+        # Itens travados (ex.: sumário) entram sempre no PDF gerado.
+        for d in self.state.documents:
+            if d.get("locked"):
+                d["selected"] = True
             
         selected_docs = [d for d in self.state.documents if d.get('selected', True)]
         if not selected_docs:
