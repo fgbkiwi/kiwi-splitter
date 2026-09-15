@@ -30,7 +30,7 @@ from PyQt6.QtGui import QIcon, QPixmap, QMovie, QPainter, QPainterPath
 _QWIDGETSIZE_MAX = 16777215
 
 APP_NAME = "Kiwi-Splitter"
-APP_VERSION = "1.2.3"
+APP_VERSION = "1.2.4"
 GITHUB_OWNER = "fgbkiwi"
 GITHUB_REPO = "kiwi-splitter"
 GITHUB_RELEASES_API = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
