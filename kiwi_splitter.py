@@ -9,7 +9,7 @@ import tempfile
 import urllib.error
 import urllib.request
 from datetime import date
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Callable
 
 import pymupdf as fitz
 import tiktoken
@@ -18,7 +18,8 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QFileDialog, QProgressBar,
     QCheckBox, QTableWidget, QTableWidgetItem, QHeaderView, QTextEdit,
-    QMessageBox, QFrame, QScrollArea, QProgressDialog, QSizePolicy
+    QMessageBox, QFrame, QScrollArea, QProgressDialog, QSizePolicy,
+    QComboBox,
 )
 from PyQt6.QtCore import (
     Qt, QThread, QTimer, pyqtSignal, QRectF,
@@ -30,7 +31,7 @@ from PyQt6.QtGui import QIcon, QPixmap, QMovie, QPainter, QPainterPath
 _QWIDGETSIZE_MAX = 16777215
 
 APP_NAME = "Kiwi-Splitter"
-APP_VERSION = "1.2.4"
+APP_VERSION = "1.2.5"
 GITHUB_OWNER = "fgbkiwi"
 GITHUB_REPO = "kiwi-splitter"
 GITHUB_RELEASES_API = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
@@ -115,19 +116,145 @@ def normalize_desc(s: str) -> str:
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
-def estimate_tokens(text: str) -> int:
+# Perfis de tokenização. O fallback antigo chars/4 subestima ~2x texto jurídico em PT
+# (OpenAI ~2,0–2,1 chars/token; Gemini no texto PDF ~1,6; no Markdown OCR ~3,1–3,3).
+TOKEN_PROVIDER_OPENAI = "openai"
+TOKEN_PROVIDER_GEMINI = "gemini"
+TOKEN_PROVIDER_LABELS = {
+    TOKEN_PROVIDER_OPENAI: "OpenAI (tiktoken cl100k)",
+    TOKEN_PROVIDER_GEMINI: "Google Gemini / AI Studio",
+}
+DEFAULT_TOKEN_PROVIDER = TOKEN_PROVIDER_GEMINI
+
+# Margem observada: AI Studio contou ~5–6% a mais que o tokenizer local Gemma3 no mesmo .md
+AI_STUDIO_UPLOAD_MARGIN = 1.06
+
+_GEMMA3_MODEL_URL = (
+    "https://raw.githubusercontent.com/google/gemma_pytorch/"
+    "014acb7ac4563a5f77c76d7ff98f31b568c16508/tokenizer/"
+    "gemma3_cleaned_262144_v2.spiece.model"
+)
+_GEMMA3_MODEL_SHA256 = (
+    "1299c11d7cf632ef3b4e11937501358ada021bbdf7c47638d13c0ee982f2e79c"
+)
+
+_tiktoken_enc = None
+_gemini_sp = None
+_token_method: Dict[str, str] = {}
+
+
+def _heuristic_tokens(text: str, provider: str) -> int:
+    """Fallback calibrado para português jurídico (nunca usar chars/4 genérico)."""
+    clean = re.sub(r"\s+", " ", text).strip()
+    if not clean:
+        return 0
+    words = len(re.findall(r"\S+", clean))
+    chars = len(clean)
+    if provider == TOKEN_PROVIDER_GEMINI:
+        # Conservador para limite de contexto: tende a sobrestimar em Markdown OCR.
+        return max(int(chars / 1.7), int(words * 1.8))
+    return max(int(chars / 2.05), int(words * 1.5))
+
+
+def _get_tiktoken_encoder():
+    global _tiktoken_enc
+    if _tiktoken_enc is None:
+        _tiktoken_enc = tiktoken.get_encoding("cl100k_base")
+    return _tiktoken_enc
+
+
+def _gemma3_model_path() -> str:
+    cache_dir = os.path.join(UPDATE_STATE_DIR, "tokenizers")
+    os.makedirs(cache_dir, exist_ok=True)
+    return os.path.join(cache_dir, "gemma3_cleaned_262144_v2.spiece.model")
+
+
+def _ensure_gemma3_model(log_cb: Optional[Callable[[str], None]] = None) -> str:
+    import hashlib
+
+    path = _gemma3_model_path()
+    if os.path.isfile(path) and os.path.getsize(path) > 0:
+        return path
+    if log_cb:
+        log_cb("Baixando tokenizer Gemma3 (Gemini/AI Studio) para contagem local de tokens...")
+    req = urllib.request.Request(
+        _GEMMA3_MODEL_URL,
+        headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"},
+    )
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        data = resp.read()
+    digest = hashlib.sha256(data).hexdigest()
+    if digest != _GEMMA3_MODEL_SHA256:
+        raise RuntimeError(
+            f"Hash do tokenizer Gemma3 inválido (obtido {digest[:12]}…)."
+        )
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "wb") as f:
+        f.write(data)
+    os.replace(tmp_path, path)
+    if log_cb:
+        log_cb(f"Tokenizer Gemma3 salvo em cache ({len(data) / (1024 * 1024):.1f} MB).")
+    return path
+
+
+def _get_gemini_sentencepiece(log_cb: Optional[Callable[[str], None]] = None):
+    global _gemini_sp
+    if _gemini_sp is not None:
+        return _gemini_sp
+    import sentencepiece as spm
+
+    path = _ensure_gemma3_model(log_cb=log_cb)
+    processor = spm.SentencePieceProcessor()
+    if not processor.Load(path):
+        raise RuntimeError("Falha ao carregar SentencePiece Gemma3.")
+    _gemini_sp = processor
+    return _gemini_sp
+
+
+def estimate_tokens(
+    text: str,
+    provider: str = DEFAULT_TOKEN_PROVIDER,
+    log_cb: Optional[Callable[[str], None]] = None,
+) -> int:
+    """Conta tokens com o tokenizer do provedor-alvo (ou fallback calibrado)."""
     if not text:
         return 0
+    provider = provider if provider in TOKEN_PROVIDER_LABELS else DEFAULT_TOKEN_PROVIDER
+
+    if provider == TOKEN_PROVIDER_OPENAI:
+        try:
+            enc = _get_tiktoken_encoder()
+            # disallowed_special=() evita falha em textos com sequências especiais.
+            n = len(enc.encode(text, disallowed_special=()))
+            _token_method[provider] = "tiktoken:cl100k_base"
+            return n
+        except Exception as e:
+            if log_cb:
+                log_cb(f"Aviso: tiktoken indisponível ({e}); usando heurística PT-BR.")
+            _token_method[provider] = "heuristic:openai-pt"
+            return _heuristic_tokens(text, TOKEN_PROVIDER_OPENAI)
+
     try:
-        enc = tiktoken.get_encoding("cl100k_base")
-        return len(enc.encode(text))
-    except Exception:
-        clean = re.sub(r"\s+", " ", text).strip()
-        if not clean:
-            return 0
-        words = len(re.findall(r"\S+", clean))
-        chars = len(clean)
-        return max(int(words * 1.3), int(chars / 4))
+        sp = _get_gemini_sentencepiece(log_cb=log_cb)
+        n = len(sp.EncodeAsIds(text))
+        _token_method[provider] = "sentencepiece:gemma3"
+        # AI Studio costuma reportar um pouco acima do tokenizer local no mesmo texto.
+        return int(round(n * AI_STUDIO_UPLOAD_MARGIN))
+    except Exception as e:
+        if log_cb:
+            log_cb(f"Aviso: tokenizer Gemini indisponível ({e}); usando heurística PT-BR.")
+        _token_method[provider] = "heuristic:gemini-pt"
+        return _heuristic_tokens(text, TOKEN_PROVIDER_GEMINI)
+
+
+def estimate_tokens_both(
+    text: str,
+    log_cb: Optional[Callable[[str], None]] = None,
+) -> Dict[str, int]:
+    return {
+        TOKEN_PROVIDER_OPENAI: estimate_tokens(text, TOKEN_PROVIDER_OPENAI, log_cb=log_cb),
+        TOKEN_PROVIDER_GEMINI: estimate_tokens(text, TOKEN_PROVIDER_GEMINI, log_cb=log_cb),
+    }
 
 def resource_path(filename: str) -> str:
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
@@ -154,6 +281,7 @@ class AppState:
         self.documents: List[Dict[str, Any]] = []
         self.log_lines: List[str] = []
         self.selections_cache: Dict[str, Dict[str, bool]] = {}
+        self.token_provider: str = DEFAULT_TOKEN_PROVIDER
         self.load_selections()
         
     def load_selections(self):
@@ -436,9 +564,23 @@ class SumarioParser:
                         if p not in self._page_text_cache:
                             self._page_text_cache[p] = doc[p].get_text("text")
                         combined_text.append(self._page_text_cache[p])
-                    d["token_est"] = estimate_tokens("\n".join(combined_text))
+                    text = "\n".join(combined_text)
+                    both = estimate_tokens_both(text, log_cb=self._log)
+                    d["token_est_openai"] = both[TOKEN_PROVIDER_OPENAI]
+                    d["token_est_gemini"] = both[TOKEN_PROVIDER_GEMINI]
+                    d["token_est"] = both[DEFAULT_TOKEN_PROVIDER]
+                    d["text_chars"] = len(text)
                 except Exception:
-                    pass
+                    d.setdefault("token_est_openai", 0)
+                    d.setdefault("token_est_gemini", 0)
+                    d.setdefault("token_est", 0)
+        methods = ", ".join(f"{k}={v}" for k, v in sorted(_token_method.items()))
+        if methods:
+            self._log(f"Método de contagem de tokens: {methods}")
+        self._log(
+            "Estimativa baseada no texto embutido do PDF (não inclui OCR de imagens). "
+            "Markdown OCR pode divergir."
+        )
         return docs
 
 def split_pdf_files(pdf_path: str, output_dir: str, selected_pages: List[int], max_mb: int, log_cb):
@@ -789,6 +931,23 @@ class MainWindow(QMainWindow):
         self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.table.setMinimumHeight(120)
         layout.addWidget(self.table, self._table_stretch_visible)
+
+        token_row = QHBoxLayout()
+        token_row.addWidget(QLabel("Estimativa para:"))
+        self.cmb_token_provider = QComboBox()
+        for key, label in TOKEN_PROVIDER_LABELS.items():
+            self.cmb_token_provider.addItem(label, key)
+        idx = self.cmb_token_provider.findData(self.state.token_provider)
+        if idx >= 0:
+            self.cmb_token_provider.setCurrentIndex(idx)
+        self.cmb_token_provider.setToolTip(
+            "OpenAI usa tiktoken (cl100k). Gemini/AI Studio usa SentencePiece Gemma3 "
+            "com margem de ~6% observada no upload do AI Studio. "
+            "A contagem é do texto embutido do PDF — OCR/Markdown pode divergir."
+        )
+        self.cmb_token_provider.currentIndexChanged.connect(self.on_token_provider_changed)
+        token_row.addWidget(self.cmb_token_provider, 1)
+        layout.addLayout(token_row)
         
         self.lbl_totals = QLabel("Selecionados: 0 documentos | Total Estimado: ~0 tokens")
         layout.addWidget(self.lbl_totals)
@@ -1123,12 +1282,20 @@ class MainWindow(QMainWindow):
     def on_analyze_done(self, docs):
         self.state.documents = docs
         prev_selections = self.state.selections_cache.get(self.state.pdf_path, {})
+        provider = self.cmb_token_provider.currentData() or self.state.token_provider
+        self.state.token_provider = provider
+        token_key = (
+            "token_est_gemini"
+            if provider == TOKEN_PROVIDER_GEMINI
+            else "token_est_openai"
+        )
         
         # Block signals briefly to prevent spamming updates
         self.table.blockSignals(True)
         self.table.setRowCount(0)
         
         for d in docs:
+            d["token_est"] = int(d.get(token_key, d.get("token_est", 0)) or 0)
             if d.get("locked"):
                 d["selected"] = True
             else:
@@ -1179,6 +1346,25 @@ class MainWindow(QMainWindow):
         doc["selected"] = bool(state)
         self.update_totals()
 
+    def on_token_provider_changed(self, _index: int = 0):
+        provider = self.cmb_token_provider.currentData()
+        if not provider:
+            provider = DEFAULT_TOKEN_PROVIDER
+        self.state.token_provider = provider
+        key = (
+            "token_est_gemini"
+            if provider == TOKEN_PROVIDER_GEMINI
+            else "token_est_openai"
+        )
+        for d in self.state.documents:
+            d["token_est"] = int(d.get(key, d.get("token_est", 0)) or 0)
+        # Atualiza só a coluna de tokens sem remontar a tabela inteira.
+        for row_idx, d in enumerate(self.state.documents):
+            item = self.table.item(row_idx, 5)
+            if item is not None:
+                item.setText(str(d.get("token_est", 0)))
+        self.update_totals()
+
     def update_totals(self):
         for d in self.state.documents:
             if d.get("locked"):
@@ -1186,8 +1372,15 @@ class MainWindow(QMainWindow):
         selected_count = sum(1 for d in self.state.documents if d.get("selected"))
         toks = sum(int(d.get("token_est", 0)) for d in self.state.documents if d.get("selected"))
         all_checked = (selected_count == len(self.state.documents)) if self.state.documents else False
+        provider_label = TOKEN_PROVIDER_LABELS.get(
+            self.state.token_provider, TOKEN_PROVIDER_LABELS[DEFAULT_TOKEN_PROVIDER]
+        )
         
-        self.lbl_totals.setText(f"Selecionados: {selected_count} documentos | Total Estimado: ~{toks} tokens")
+        self.lbl_totals.setText(
+            f"Selecionados: {selected_count} documentos | "
+            f"Total Estimado ({provider_label}): ~{toks:,} tokens "
+            f"| texto embutido do PDF"
+        )
         
         self.chk_select_all.blockSignals(True)
         self.chk_select_all.setChecked(all_checked)

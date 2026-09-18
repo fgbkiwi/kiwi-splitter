@@ -6,7 +6,7 @@ O `kiwi_splitter.py` é uma aplicação enxuta e especializada para redimensiona
 ## Funcionalidades Chave:
 
 - **Automação de Divisão Baseada em Peso**: Se você submeter um ou mais documentos gigantes originários do processo com tamanho na casa de cem Megabytes ou mais, a configuração automática do aplicativo se encarrega de dividir em fatias ideais. Cada PDF será segmentado progressivamente sem que nenhuma fatia jamais exceda **45 MB**.
-- **Mantém a Contagem de Tokens**: Os cálculos analíticos de tamanho do documento (em tokens LLM) foram deixados intactos via script tiktoken interno para manter a previsibilidade do recorte.
+- **Mantém a Contagem de Tokens**: A estimativa usa o tokenizer do provedor-alvo — **OpenAI** (`tiktoken` cl100k) ou **Google Gemini / AI Studio** (SentencePiece Gemma3, com margem de ~6% observada no upload). O fallback antigo `chars/4` (inglês) foi removido por subestimar ~2× textos jurídicos em português. A contagem é do **texto embutido do PDF**; Markdown OCR pode divergir.
 - **Botão Inteligente de Marcação Geral**: Você pediu e agora acima da lista do Sumário há um alternador global `Selecionar Todos` simplificando a logística.
 - **Log Persistente**: Logs idênticos aos scripts antecessores.
 
