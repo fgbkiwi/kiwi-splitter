@@ -45,6 +45,10 @@ UPDATE_CHECK_FILE = os.path.join(UPDATE_STATE_DIR, "update_check.json")
 def ts() -> str:
     return time.strftime("[%Y-%m-%d %H:%M:%S]")
 
+def file_timestamp_suffix() -> str:
+    """Sufixo de data/hora para nomes de arquivo: YYYYMMDD_HHMMSS."""
+    return time.strftime("%Y%m%d_%H%M%S")
+
 def parse_version(version: str) -> Tuple[int, ...]:
     cleaned = (version or "").strip().lstrip("vV")
     parts: List[int] = []
@@ -255,6 +259,32 @@ def estimate_tokens_both(
         TOKEN_PROVIDER_OPENAI: estimate_tokens(text, TOKEN_PROVIDER_OPENAI, log_cb=log_cb),
         TOKEN_PROVIDER_GEMINI: estimate_tokens(text, TOKEN_PROVIDER_GEMINI, log_cb=log_cb),
     }
+
+
+def estimate_pdf_subset_bytes(
+    src_doc: fitz.Document,
+    start_page: int,
+    end_page: int,
+) -> int:
+    """Estima o tamanho em bytes de um subconjunto de páginas (PDF sanitizado)."""
+    if end_page < start_page:
+        end_page = start_page
+    subset = fitz.open()
+    try:
+        subset.insert_pdf(src_doc, from_page=start_page, to_page=end_page)
+        return len(subset.tobytes(garbage=3, deflate=True))
+    finally:
+        subset.close()
+
+
+def format_bytes(n: int) -> str:
+    """Formata bytes para exibição compacta (B / KB / MB)."""
+    n = max(0, int(n or 0))
+    if n < 1024:
+        return f"{n} B"
+    if n < 1024 * 1024:
+        return f"{n / 1024:.1f} KB"
+    return f"{n / (1024 * 1024):.2f} MB"
 
 def resource_path(filename: str) -> str:
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
@@ -488,7 +518,8 @@ class SumarioParser:
                                 "type": (doc_type or "Desconhecido"),
                                 "display_name": f"{doc_desc} (ID: {doc_id})",
                                 "description": doc_desc,
-                                "token_est": 0
+                                "token_est": 0,
+                                "bytes_est": 0,
                             })
                             
         unique: Dict[str, Dict[str, Any]] = {}
@@ -506,7 +537,7 @@ class SumarioParser:
             total_pages = len(doc)
             sumario_start = getattr(self, "_sumario_start_page", None)
 
-            # Páginas do sumário PJe-JT (final do PDF) viram peça própria e travada.
+            # Páginas do sumário PJe-JT (final do PDF) viram peça própria (desselecionável com aviso).
             sumario_item = {
                 "id": "sumario",
                 "start_page": sumario_start if sumario_start is not None else 0,
@@ -515,8 +546,9 @@ class SumarioParser:
                 "display_name": "Sumário do Processo (PJe-JT)",
                 "description": "Sumário do Processo (PJe-JT)",
                 "token_est": 0,
+                "bytes_est": 0,
                 "selected": True,
-                "locked": True,
+                "warn_on_unselect": True,
             }
             if sumario_start is not None and 0 <= sumario_start < total_pages:
                 docs = [d for d in docs if d.get("start_page", -1) < sumario_start]
@@ -532,7 +564,7 @@ class SumarioParser:
                 docs.append(sumario_item)
                 self._log(
                     f"Sumário: páginas {sumario_start + 1}–{total_pages} "
-                    "incluídas como item fixo (sempre selecionado)."
+                    "incluídas como item selecionável (aviso ao desmarcar)."
                 )
             else:
                 docs.sort(key=lambda x: x["start_page"])
@@ -550,6 +582,7 @@ class SumarioParser:
                         "display_name": "Capa / Termos Iniciais",
                         "description": "Capa / Termos Iniciais",
                         "token_est": 0,
+                        "bytes_est": 0,
                         "selected": True
                     }
                     docs.insert(0, capa_doc)
@@ -570,24 +603,32 @@ class SumarioParser:
                     d["token_est_gemini"] = both[TOKEN_PROVIDER_GEMINI]
                     d["token_est"] = both[DEFAULT_TOKEN_PROVIDER]
                     d["text_chars"] = len(text)
+                    d["bytes_est"] = estimate_pdf_subset_bytes(doc, sp, ep)
                 except Exception:
                     d.setdefault("token_est_openai", 0)
                     d.setdefault("token_est_gemini", 0)
                     d.setdefault("token_est", 0)
+                    d.setdefault("bytes_est", 0)
         methods = ", ".join(f"{k}={v}" for k, v in sorted(_token_method.items()))
         if methods:
             self._log(f"Método de contagem de tokens: {methods}")
         self._log(
-            "Estimativa baseada no texto embutido do PDF (não inclui OCR de imagens). "
+            "Estimativa de tokens baseada no texto embutido do PDF (não inclui OCR de imagens). "
             "Markdown OCR pode divergir."
+        )
+        self._log(
+            "Estimativa de bytes = tamanho aproximado do subconjunto PDF sanitizado "
+            "(deflate); o arquivo consolidado final pode ser um pouco menor por "
+            "compartilhar fontes/recursos entre páginas."
         )
         return docs
 
 def split_pdf_files(pdf_path: str, output_dir: str, selected_pages: List[int], max_mb: int, log_cb):
     max_bytes = max_mb * 1024 * 1024
     base_name = os.path.basename(pdf_path).replace(".pdf", "")
+    run_suffix = file_timestamp_suffix()
     
-    full_sanitized_name = f"{base_name}_full_sanitized.pdf"
+    full_sanitized_name = f"{base_name}_full_sanitized_{run_suffix}.pdf"
     full_sanitized_path = os.path.join(output_dir, full_sanitized_name)
     
     log_cb(f"Gerando arquivo consolidado sanitizado...")
@@ -619,7 +660,7 @@ def split_pdf_files(pdf_path: str, output_dir: str, selected_pages: List[int], m
         if total_size <= max_bytes:
             doc = fitz.open(pdf_path)
             doc.select(chunk_to_test)
-            out_name = f"{base_name}_part{part_number}.pdf"
+            out_name = f"{base_name}_part{part_number}_{run_suffix}.pdf"
             out_path = os.path.join(output_dir, out_name)
             doc.save(out_path, garbage=4, deflate=True)
             final_size = os.path.getsize(out_path)
@@ -649,7 +690,7 @@ def split_pdf_files(pdf_path: str, output_dir: str, selected_pages: List[int], m
                 
         doc = fitz.open(pdf_path)
         doc.select(chunk_to_test[:best_split])
-        out_name = f"{base_name}_part{part_number}.pdf"
+        out_name = f"{base_name}_part{part_number}_{run_suffix}.pdf"
         out_path = os.path.join(output_dir, out_name)
         
         doc.save(out_path, garbage=4, deflate=True)
@@ -924,8 +965,10 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.chk_select_all)
         
         self.table = QTableWidget()
-        self.table.setColumnCount(6)
-        self.table.setHorizontalHeaderLabels(["Incluir", "ID PJe", "Documento", "Tipo", "Páginas", "Tokens Est."])
+        self.table.setColumnCount(7)
+        self.table.setHorizontalHeaderLabels([
+            "Incluir", "ID PJe", "Documento", "Tipo", "Páginas", "Tokens Est.", "Bytes Est."
+        ])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -949,7 +992,9 @@ class MainWindow(QMainWindow):
         token_row.addWidget(self.cmb_token_provider, 1)
         layout.addLayout(token_row)
         
-        self.lbl_totals = QLabel("Selecionados: 0 documentos | Total Estimado: ~0 tokens")
+        self.lbl_totals = QLabel(
+            "Selecionados: 0 documentos | Total Estimado: ~0 tokens | ~0 B"
+        )
         layout.addWidget(self.lbl_totals)
         
         # Sec 4: Logs (cabeçalho fixo + container animável)
@@ -1236,7 +1281,9 @@ class MainWindow(QMainWindow):
             self.log_area.clear()
             
             self.table.setRowCount(0)
-            self.lbl_totals.setText("Selecionados: 0 documentos | Total Estimado: ~0 tokens")
+            self.lbl_totals.setText(
+                "Selecionados: 0 documentos | Total Estimado: ~0 tokens | ~0 B"
+            )
             
             self.chk_select_all.blockSignals(True)
             self.chk_select_all.setChecked(True)
@@ -1296,10 +1343,7 @@ class MainWindow(QMainWindow):
         
         for d in docs:
             d["token_est"] = int(d.get(token_key, d.get("token_est", 0)) or 0)
-            if d.get("locked"):
-                d["selected"] = True
-            else:
-                d["selected"] = prev_selections.get(d["id"], True)
+            d["selected"] = prev_selections.get(d["id"], True)
             row_idx = self.table.rowCount()
             self.table.insertRow(row_idx)
             
@@ -1309,12 +1353,12 @@ class MainWindow(QMainWindow):
             chk_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
             chk = QCheckBox()
             chk.setChecked(d["selected"])
-            if d.get("locked"):
-                chk.setEnabled(False)
-                chk.setToolTip("O sumário do PJe-JT é sempre incluído e não pode ser removido.")
-            else:
-                # Use lambda with default arg to bind scope correctly
-                chk.stateChanged.connect(lambda state, doc=d: self.on_doc_toggled(doc, state))
+            if d.get("warn_on_unselect"):
+                chk.setToolTip(
+                    "Desmarcar o sumário pode comprometer a conversão no Kiwi Down."
+                )
+            # Use lambda with default arg to bind scope correctly
+            chk.stateChanged.connect(lambda state, doc=d: self.on_doc_toggled(doc, state))
             chk_layout.addWidget(chk)
             self.table.setCellWidget(row_idx, 0, chk_widget)
             
@@ -1331,6 +1375,16 @@ class MainWindow(QMainWindow):
             tokens_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             self.table.setItem(row_idx, 5, tokens_item)
 
+            bytes_est = int(d.get("bytes_est", 0) or 0)
+            bytes_item = QTableWidgetItem(format_bytes(bytes_est))
+            bytes_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            bytes_item.setData(Qt.ItemDataRole.UserRole, bytes_est)
+            bytes_item.setToolTip(
+                f"{bytes_est:,} bytes — estimativa do subconjunto PDF sanitizado "
+                "(próximo ao tamanho do arquivo convertido para este documento)."
+            )
+            self.table.setItem(row_idx, 6, bytes_item)
+
         self.table.blockSignals(False)
         self.update_totals()
         
@@ -1338,12 +1392,44 @@ class MainWindow(QMainWindow):
         self.btn_analyze.setEnabled(True)
         self.btn_split.setEnabled(True)
 
-    def on_doc_toggled(self, doc, state):
-        if doc.get("locked"):
-            doc["selected"] = True
-            self.update_totals()
+    def _confirm_sumario_unselect(self) -> bool:
+        reply = QMessageBox.warning(
+            self,
+            "Excluir Sumário?",
+            (
+                "A exclusão do sumário poderá comprometer a conversão do arquivo PDF "
+                "para markdown, quando utilizado o aplicativo Kiwi Down.\n\n"
+                "Deseja excluir o sumário mesmo assim?"
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return reply == QMessageBox.StandardButton.Yes
+
+    def _set_doc_checkbox(self, doc, checked: bool):
+        try:
+            row_idx = self.state.documents.index(doc)
+        except ValueError:
             return
-        doc["selected"] = bool(state)
+        widget = self.table.cellWidget(row_idx, 0)
+        if not widget:
+            return
+        chk = widget.layout().itemAt(0).widget()
+        if chk is None:
+            return
+        chk.blockSignals(True)
+        chk.setChecked(checked)
+        chk.blockSignals(False)
+
+    def on_doc_toggled(self, doc, state):
+        checked = bool(state)
+        if not checked and doc.get("warn_on_unselect"):
+            if not self._confirm_sumario_unselect():
+                self._set_doc_checkbox(doc, True)
+                doc["selected"] = True
+                self.update_totals()
+                return
+        doc["selected"] = checked
         self.update_totals()
 
     def on_token_provider_changed(self, _index: int = 0):
@@ -1366,11 +1452,9 @@ class MainWindow(QMainWindow):
         self.update_totals()
 
     def update_totals(self):
-        for d in self.state.documents:
-            if d.get("locked"):
-                d["selected"] = True
         selected_count = sum(1 for d in self.state.documents if d.get("selected"))
         toks = sum(int(d.get("token_est", 0)) for d in self.state.documents if d.get("selected"))
+        bytes_total = sum(int(d.get("bytes_est", 0) or 0) for d in self.state.documents if d.get("selected"))
         all_checked = (selected_count == len(self.state.documents)) if self.state.documents else False
         provider_label = TOKEN_PROVIDER_LABELS.get(
             self.state.token_provider, TOKEN_PROVIDER_LABELS[DEFAULT_TOKEN_PROVIDER]
@@ -1378,8 +1462,9 @@ class MainWindow(QMainWindow):
         
         self.lbl_totals.setText(
             f"Selecionados: {selected_count} documentos | "
-            f"Total Estimado ({provider_label}): ~{toks:,} tokens "
-            f"| texto embutido do PDF"
+            f"Total Estimado ({provider_label}): ~{toks:,} tokens | "
+            f"~{format_bytes(bytes_total)} "
+            f"| texto embutido / PDF sanitizado"
         )
         
         self.chk_select_all.blockSignals(True)
@@ -1392,9 +1477,18 @@ class MainWindow(QMainWindow):
 
     def on_select_all(self, state):
         is_checked = bool(state)
+        keep_sumario = False
+        if not is_checked:
+            sumario_selected = any(
+                d.get("warn_on_unselect") and d.get("selected")
+                for d in self.state.documents
+            )
+            if sumario_selected and not self._confirm_sumario_unselect():
+                keep_sumario = True
+
         self.table.blockSignals(True)
         for i, d in enumerate(self.state.documents):
-            if d.get("locked"):
+            if keep_sumario and d.get("warn_on_unselect"):
                 d["selected"] = True
                 widget = self.table.cellWidget(i, 0)
                 if widget:
@@ -1416,11 +1510,6 @@ class MainWindow(QMainWindow):
             self.log("Analise a estrutura primeiro.")
             return
 
-        # Itens travados (ex.: sumário) entram sempre no PDF gerado.
-        for d in self.state.documents:
-            if d.get("locked"):
-                d["selected"] = True
-            
         selected_docs = [d for d in self.state.documents if d.get('selected', True)]
         if not selected_docs:
             self.log("Nenhum documento selecionado.")
@@ -1453,7 +1542,7 @@ class MainWindow(QMainWindow):
     def save_log(self):
         try:
             pdf_stem = os.path.splitext(os.path.basename(self.state.pdf_path))[0] if self.state.pdf_path else "log"
-            fname = f"{pdf_stem}_log_split_{int(time.time())}.txt"
+            fname = f"{pdf_stem}_log_split_{file_timestamp_suffix()}.txt"
             path = os.path.join(self.state.output_dir, fname)
             with open(path, "w", encoding="utf-8") as f:
                 f.write("\n".join(self.state.log_lines))
