@@ -1273,9 +1273,6 @@ class MainWindow(QMainWindow):
     def select_pdf(self):
         path, _ = QFileDialog.getOpenFileName(self, "Selecionar PDF", "", "PDF Files (*.pdf)")
         if path:
-            # Prepara a UI para uma nova sessão de fracionamento do Zero
-            prev_dest = self.state.output_dir
-            
             self.state.documents.clear()
             self.state.log_lines.clear()
             self.log_area.clear()
@@ -1293,11 +1290,8 @@ class MainWindow(QMainWindow):
             self.state.pdf_path = path
             self.pdf_input.setText(path)
             
-            if not prev_dest:
-                self.state.output_dir = os.path.dirname(path)
-                self.dest_input.setText(self.state.output_dir)
-            else:
-                self.state.output_dir = prev_dest
+            self.state.output_dir = os.path.dirname(path)
+            self.dest_input.setText(self.state.output_dir)
                 
             # Limpa lixo residual do PyMuPDF na RAM (C variables e arrays isolados de pdfs antigos)
             gc.collect()
