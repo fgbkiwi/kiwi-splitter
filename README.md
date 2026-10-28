@@ -35,11 +35,21 @@ A partir da versão **1.1.0**, o script também gera automaticamente um arquivo 
 
 ## Instalação
 
-A aplicação está disponível apenas para Windows.
+### Windows
 
 Baixe o instalador executável na seção [**Releases**](https://github.com/fgbkiwi/kiwi-splitter/releases/latest) deste repositório, execute o arquivo `Kiwi-Splitter_*.exe` e siga o assistente de instalação.
 
-Em execuções seguintes, o próprio aplicativo verifica **no máximo uma vez por dia** se há versão mais recente nas Releases e oferece baixar/instalar (é possível recusar e continuar usando a versão atual).
+### Pop!_OS e Ubuntu
+
+Baixe o pacote `Kiwi-Splitter_*_amd64.deb` (ou `arm64`, conforme a máquina) na mesma seção de Releases e abra-o — no Pop!_OS o Eddy, no Ubuntu o instalador de software. No terminal:
+
+```bash
+sudo apt install ./Kiwi-Splitter_<versão>_<arquitetura>.deb
+```
+
+O atalho **Kiwi-Splitter** aparece no menu de aplicativos. O pacote vale para Pop!_OS e Ubuntu 22.04 ou mais novo.
+
+Em execuções seguintes, o próprio aplicativo verifica **no máximo uma vez por dia** se há versão mais recente nas Releases e oferece baixar/instalar (é possível recusar e continuar usando a versão atual). No Linux essa atualização é o `.deb` da mesma Release; no Windows, o `.exe`.
 
 ## Para mantenedores e desenvolvedores
 
@@ -48,7 +58,7 @@ Scripts de build, bump de versão e publicação de Release permanecem no reposi
 ### Dependências locais
 - Clone o repositório e sincronize o ambiente (`uv sync` ou equivalente com o `pyproject.toml` / `requirements.txt`).
 
-### Gerar e publicar o instalador (Pynsist)
+### Gerar e publicar o instalador Windows (Pynsist)
 - Requisitos: NSIS, [GitHub CLI](https://cli.github.com/) (`gh`) autenticado (`gh auth login`) se for publicar.
 - Fonte única da versão: `APP_VERSION` em `kiwi_splitter.py` (`bump_version.py` sincroniza `kiwi_splitter_pynsist.cfg` e `pyproject.toml`).
 - Comandos:
@@ -56,5 +66,17 @@ Scripts de build, bump de versão e publicação de Release permanecem no reposi
   - `.\build_kiwi_splitter_pynsist.ps1 minor` / `major` — bump correspondente + Release
   - `.\build_kiwi_splitter_pynsist.ps1 -NoPublish` — só gera o `.exe` (testes locais)
 
-O instalador sai em `build/nsis/` e, sem `-NoPublish`, a Release aparece em [Releases](https://github.com/fgbkiwi/kiwi-splitter/releases/latest). A pasta `build/` e o `.exe` **não** entram no Git — só o asset da Release. Após uma Release real, faça commit/push do bump de versão.
+O instalador sai em `build/nsis/`.
+
+### Gerar e publicar o pacote Linux (Pop!_OS e Ubuntu)
+- Requisitos: `uv`, `dpkg-deb` e, para publicar, o `gh` autenticado. O script baixa um CPython 3.14 e empacota o aplicativo com as dependências; não usa o Python 3.12 do sistema.
+- Comandos (na raiz do repositório):
+  - `./build_kiwi_splitter_deb.sh` — bump **patch** (padrão) + `.deb` + Release
+  - `./build_kiwi_splitter_deb.sh minor` / `major` — bump correspondente + Release
+  - `./build_kiwi_splitter_deb.sh --no-publish` — só gera o `.deb`
+  - `./build_kiwi_splitter_deb.sh --no-bump` — empacota a versão já gravada em `APP_VERSION`, sem incrementar de novo (use depois do build Windows da mesma versão)
+
+O pacote sai em `build/deb/`. Se a Release daquela versão já existir (por exemplo, criada pelo script do Windows), o `.deb` é anexado como asset adicional em vez de criar outra tag.
+
+A pasta `build/` e os instaladores **não** entram no Git — só o asset da Release. Após uma Release real, faça commit/push do bump de versão. Sem `--no-publish`, a Release aparece em [Releases](https://github.com/fgbkiwi/kiwi-splitter/releases/latest).
 

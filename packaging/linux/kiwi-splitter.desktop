@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Kiwi-Splitter
+GenericName=Fracionador de PDF
+Comment=Fracionador e sanitizador de PDF (PJe) para LLMs
+Exec=/usr/bin/kiwi-splitter
+Icon=kiwi-splitter
+Terminal=false
+Categories=Office;
+Keywords=PDF;PJe;LLM;
+StartupNotify=true
+StartupWMClass=kiwi-splitter
