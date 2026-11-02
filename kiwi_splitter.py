@@ -31,7 +31,7 @@ from PyQt6.QtGui import QIcon, QPixmap, QMovie, QPainter, QPainterPath
 _QWIDGETSIZE_MAX = 16777215
 
 APP_NAME = "Kiwi-Splitter"
-APP_VERSION = "1.3.1"
+APP_VERSION = "1.3.2"
 GITHUB_OWNER = "fgbkiwi"
 GITHUB_REPO = "kiwi-splitter"
 GITHUB_RELEASES_API = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
@@ -357,6 +357,8 @@ class SumarioParser:
     def _find_sumario_start_page(self, doc) -> Optional[int]:
         """Localiza a 1ª página do índice PJe-JT pelo cabeçalho SUMÁRIO (não por tabelas)."""
         # Processos longos podem ter sumário extenso; busca nas últimas 120 páginas.
+        # Há sumários aninhados quando se junta carta precatória (ou outro processo):
+        # o índice oficial do PDF baixado fica sempre no FINAL — usar a última ocorrência.
         start_search = max(0, len(doc) - 120)
         found: Optional[int] = None
         heading_re = re.compile(r"\bSUM[AÁ]RIO\b", re.IGNORECASE)
@@ -369,8 +371,7 @@ class SumarioParser:
             if heading_re.match(head) or (
                 "DOCUMENTO" in head and ("ID" in head or "ID." in head)
             ):
-                if found is None or i < found:
-                    found = i
+                found = i  # última ocorrência vence
         return found
 
     def _parse_with_pymupdf(self) -> List[Dict[str, Any]]:
@@ -1509,6 +1510,12 @@ class MainWindow(QMainWindow):
             self.log("Nenhum documento selecionado.")
             return
 
+        openai_total = sum(int(d.get("token_est_openai") or 0) for d in selected_docs)
+        gemini_total = sum(int(d.get("token_est_gemini") or 0) for d in selected_docs)
+        self.log(
+            "Total estimado (documentos selecionados / arquivo sanitizado): "
+            f"openai={openai_total} gemini={gemini_total}"
+        )
         self.log("Iniciando divisão e extração dos documentos...")
         
         selected_pages = []

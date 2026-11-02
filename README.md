@@ -28,10 +28,8 @@ A partir da versão **1.1.0**, o script também gera automaticamente um arquivo 
 * **Velocidade e Estabilidade:** O algorítmo C do `PyMuPDF` (`fitz.tobytes` para particionamento de PDFs de 200MB+) roda agonicamente fechado em uma `QThread` invisível isolada no background, enquanto a GUI continua fluindo a 60 FPS, aceitando cliques e processando barras de progresso sem qualquer frame delay artificial.
 * **Componentes Responsivos:** Foi implementada uma QTableWditet nativa com seleção em lote auto-estilizável em "Fusion" UI para consistência moderna nativa. Essa alteração vale exclusivamente para o script de Splitting, garantindo escalabilidade à prova de falhas na máquina do analista.
 
-## Atualizações em estudo
-* **Conversão para Markdown**
-* **OCR de tabelas, imagens e documentos manuscritos**
-- Estamos testando várias bibliotecas e LLMs para encontrar o balanço ideal de performance e confiabilidade, com ou sem processamento por GPU. Em breve indicaremos o link de um novo projeto com estas funcionalidades.
+## Conversão para Markdown
+* **Procure o repositório Kiwi Down deste mesmo autor**
 
 ## Instalação
 
