@@ -1,4 +1,6 @@
 import os
+import platform
+import shutil
 import sys
 import re
 import time
@@ -92,26 +94,80 @@ def mark_update_checked() -> None:
     state["last_check_date"] = date.today().isoformat()
     save_update_check_state(state)
 
+def _installer_suffixes() -> Tuple[str, ...]:
+    """Extensão do instalador desta plataforma (o .exe do Windows não serve no Linux)."""
+    if sys.platform.startswith("linux"):
+        return (".deb",)
+    if sys.platform == "darwin":
+        return (".dmg", ".pkg")
+    return (".exe",)
+
+
+def _installer_extension() -> str:
+    return _installer_suffixes()[0]
+
+
+def _preferred_arch_tokens() -> Tuple[str, ...]:
+    machine = platform.machine().lower()
+    if machine in ("x86_64", "amd64"):
+        return ("amd64", "x86_64")
+    if machine in ("aarch64", "arm64"):
+        return ("arm64", "aarch64")
+    return (machine,) if machine else ()
+
+
 def pick_installer_asset(assets: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    candidates = []
+    suffixes = _installer_suffixes()
+    named: List[Dict[str, Any]] = []
+    fallback: List[Dict[str, Any]] = []
     for asset in assets or []:
         name = str(asset.get("name") or "")
         url = asset.get("browser_download_url")
         if not url:
             continue
         lower = name.lower()
-        if lower.endswith(".exe") and ("kiwi-splitter" in lower or "kiwi_splitter" in lower):
-            candidates.append(asset)
-    if not candidates:
-        for asset in assets or []:
-            name = str(asset.get("name") or "")
-            if name.lower().endswith(".exe") and asset.get("browser_download_url"):
-                candidates.append(asset)
-                break
+        if not lower.endswith(suffixes):
+            continue
+        if "kiwi-splitter" in lower or "kiwi_splitter" in lower:
+            named.append(asset)
+        else:
+            fallback.append(asset)
+    candidates = named or fallback
     if not candidates:
         return None
-    candidates.sort(key=lambda a: (0 if "setup" in str(a.get("name", "")).lower() or "_" in str(a.get("name", "")) else 1, str(a.get("name", ""))))
+
+    arch_tokens = _preferred_arch_tokens()
+    other_arch = ("amd64", "arm64", "aarch64", "x86_64", "i386")
+
+    def _rank(asset: Dict[str, Any]) -> Tuple[int, int, str]:
+        name = str(asset.get("name") or "")
+        lower = name.lower()
+        if arch_tokens and any(token in lower for token in arch_tokens):
+            arch_rank = 0
+        elif any(token in lower for token in other_arch):
+            arch_rank = 2
+        else:
+            arch_rank = 1
+        generic_rank = 0 if ("setup" in lower or "_" in lower) else 1
+        return (arch_rank, generic_rank, name)
+
+    candidates.sort(key=_rank)
     return candidates[0]
+
+
+def launch_downloaded_installer(installer_path: str) -> None:
+    """Abre o instalador. No Linux o asset da Release é um pacote .deb."""
+    if sys.platform.startswith("linux") and installer_path.lower().endswith(".deb"):
+        xdg_open = shutil.which("xdg-open")
+        if xdg_open:
+            subprocess.Popen([xdg_open, installer_path])
+            return
+        apt = shutil.which("apt")
+        pkexec = shutil.which("pkexec")
+        if apt and pkexec:
+            subprocess.Popen([pkexec, apt, "install", "-y", installer_path])
+            return
+    subprocess.Popen([installer_path], shell=False)
 
 def normalize_desc(s: str) -> str:
     if not s: return ""
@@ -790,7 +846,7 @@ class UpdateCheckThread(QThread):
                 return
 
             download_url = str(asset.get("browser_download_url") or "")
-            filename = str(asset.get("name") or f"{APP_NAME}_{remote_version}.exe")
+            filename = str(asset.get("name") or f"{APP_NAME}_{remote_version}{_installer_extension()}")
             if download_url and version_is_newer(remote_version, APP_VERSION):
                 self.update_available.emit(remote_version.lstrip("vV"), filename, download_url)
         except urllib.error.HTTPError as exc:
@@ -819,7 +875,7 @@ class InstallerDownloadThread(QThread):
     def run(self):
         dest_path = ""
         try:
-            safe_name = os.path.basename(self.filename) or f"{APP_NAME}-update.exe"
+            safe_name = os.path.basename(self.filename) or f"{APP_NAME}-update{_installer_extension()}"
             dest_path = os.path.join(tempfile.gettempdir(), safe_name)
             req = urllib.request.Request(
                 self.download_url,
@@ -1240,7 +1296,7 @@ class MainWindow(QMainWindow):
             self.download_progress = None
         self.log(f"Instalador baixado em: {installer_path}")
         try:
-            subprocess.Popen([installer_path], shell=False)
+            launch_downloaded_installer(installer_path)
         except Exception as exc:
             QMessageBox.warning(
                 self,
@@ -1587,6 +1643,8 @@ class MainWindow(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    if sys.platform.startswith("linux"):
+        app.setDesktopFileName("kiwi-splitter")
     app_icon_path = resource_path("kiwi-splitter.ico")
     if os.path.exists(app_icon_path):
         app.setWindowIcon(QIcon(app_icon_path))
