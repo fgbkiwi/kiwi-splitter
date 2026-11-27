@@ -20,13 +20,19 @@
 #   GitHub CLI (gh) autenticado — so necessario se for publicar
 #
 # Uso:
-#   ./build_kiwi_splitter_deb.sh                  # patch + publica Release
-#   ./build_kiwi_splitter_deb.sh minor            # minor + publica Release
-#   ./build_kiwi_splitter_deb.sh major            # major + publica Release
-#   ./build_kiwi_splitter_deb.sh --no-publish     # so gera o .deb
+#   ./build_kiwi_splitter_deb.sh                  # patch + commit/tag/push + Release
+#   ./build_kiwi_splitter_deb.sh minor            # minor + commit/tag/push + Release
+#   ./build_kiwi_splitter_deb.sh major            # major + commit/tag/push + Release
+#   ./build_kiwi_splitter_deb.sh --no-publish     # so gera o .deb (sem git/Release)
 #   ./build_kiwi_splitter_deb.sh minor --no-publish
-#   ./build_kiwi_splitter_deb.sh --no-bump        # empacota a versao atual
+#   ./build_kiwi_splitter_deb.sh --no-bump        # versao atual + tag/push + Release
 #                                                  # (util depois do build Windows)
+#   ./build_kiwi_splitter_deb.sh --allow-dirty    # permite working tree sujo
+#
+# Ao publicar, o script exige working tree limpo e em dia com o remoto,
+# faz commit do bump (kiwi_splitter.py, .cfg, pyproject.toml), cria a
+# tag vX.Y.Z, faz push de branch + tag e cria a Release (ou anexa o .deb
+# se a Release da mesma versao ja existir — p.ex. criada pelo build Windows).
 # ============================================================
 
 set -euo pipefail
@@ -44,6 +50,7 @@ SOURCE_FILE="kiwi_splitter.py"
 PACKAGING_DIR="$SCRIPT_DIR/packaging/linux"
 GITHUB_REPO="fgbkiwi/kiwi-splitter"
 WORKDIR="$SCRIPT_DIR/build/linux"
+VERSION_FILES=(kiwi_splitter.py kiwi_splitter_pynsist.cfg pyproject.toml)
 
 if [ -t 1 ]; then
     CYAN=$'\033[36m'
@@ -66,23 +73,26 @@ die() {
 
 usage() {
     cat <<EOF
-Uso: $0 [patch|minor|major] [--no-publish] [--no-bump]
+Uso: $0 [patch|minor|major] [--no-publish] [--no-bump] [--allow-dirty]
 
   patch|minor|major   componente do bump (padrao: patch)
-  --no-publish        so gera o .deb, sem Release no GitHub
+  --no-publish        so gera o .deb, sem commit/push/Release
   --no-bump           usa APP_VERSION atual, sem alterar os fontes
+  --allow-dirty       permite publicar com working tree sujo
 EOF
 }
 
 BUMP="patch"
 PUBLISH=1
 DO_BUMP=1
+ALLOW_DIRTY=0
 
 for arg in "$@"; do
     case "$arg" in
         patch|minor|major) BUMP="$arg" ;;
         --no-publish|-NoPublish) PUBLISH=0 ;;
         --no-bump|-NoBump) DO_BUMP=0 ;;
+        --allow-dirty|-AllowDirty) ALLOW_DIRTY=1 ;;
         -h|--help) usage; exit 0 ;;
         *)
             echo "Argumento desconhecido: $arg" >&2
@@ -99,17 +109,47 @@ echo "${CYAN}========================================${RESET}"
 command -v uv >/dev/null 2>&1 || die "uv nao encontrado. Instale em https://docs.astral.sh/uv/"
 command -v dpkg-deb >/dev/null 2>&1 || die "dpkg-deb nao encontrado."
 command -v dpkg >/dev/null 2>&1 || die "dpkg nao encontrado."
+command -v git >/dev/null 2>&1 || die "git nao encontrado."
 
-[ -f "$BUMP_SCRIPT" ] || die "Script de bump nao encontrado: '$BUMP_SCRIPT'."
 [ -f "$ICON_FILE" ] || die "Icone do aplicativo nao encontrado: '$ICON_FILE'."
 [ -f "$LOGO_PNG" ] || die "Logo PNG nao encontrado: '$LOGO_PNG'."
 [ -f "$SPLASH_GIF" ] || die "Splash GIF nao encontrado: '$SPLASH_GIF'."
 [ -f "$PACKAGING_DIR/kiwi-splitter.sh" ] || die "Launcher nao encontrado em packaging/linux/."
+[ "$DO_BUMP" -eq 0 ] || [ -f "$BUMP_SCRIPT" ] || die "Script de bump nao encontrado: '$BUMP_SCRIPT'."
 
+DETACHED=0
 if [ "$PUBLISH" -eq 1 ]; then
     command -v gh >/dev/null 2>&1 || die "GitHub CLI (gh) nao encontrado. Instale-o ou use --no-publish."
     gh auth status >/dev/null 2>&1 || die "GitHub CLI nao autenticado. Rode 'gh auth login' ou use --no-publish."
+
+    # --- Git preflight (antes do build, para nao desperdicar um build longo) ---
+    git fetch --quiet --tags origin || die "git fetch falhou."
+    if [ "$ALLOW_DIRTY" -eq 0 ] && [ -n "$(git status --porcelain)" ]; then
+        git status --short >&2
+        die "working tree com alteracoes nao commitadas. Faca commit antes, ou use --allow-dirty.
+  (Se so os arquivos de versao aparecem, um build anterior provavelmente deixou o bump para tras:
+  git checkout -- ${VERSION_FILES[*]})"
+    fi
+    git symbolic-ref -q HEAD >/dev/null || DETACHED=1
+    if [ "$DETACHED" -eq 1 ]; then
+        [ "$DO_BUMP" -eq 0 ] || die "nao da para fazer bump com HEAD destacado; faca checkout de um branch (ou use --no-bump)."
+    else
+        git rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1 \
+            || die "o ramo atual nao tem upstream. Rode: git push -u origin HEAD"
+        [ "$(git rev-list --count 'HEAD..@{u}')" -eq 0 ] \
+            || die "o ramo local esta atras do remoto. Rode 'git pull' antes."
+    fi
 fi
+
+# Reverte o incremento se o build falhar antes do commit.
+BUMP_PENDING=0
+restore_bump() {
+    if [ "$BUMP_PENDING" -eq 1 ]; then
+        echo "${YELLOW}Build falhou: revertendo bump em: ${VERSION_FILES[*]}${RESET}" >&2
+        git checkout -- "${VERSION_FILES[@]}" || true
+    fi
+}
+trap restore_bump EXIT
 
 PY_VER=$(tr -d '[:space:]' < "$SCRIPT_DIR/.python-version")
 [ -n "$PY_VER" ] || die "Nao foi possivel ler .python-version."
@@ -141,6 +181,9 @@ if [ "$DO_BUMP" -eq 1 ]; then
     echo "${CYAN}[1/5] Incrementando versao ($BUMP)...${RESET}"
     bump_output=$("$PY_BIN" "$BUMP_SCRIPT" "$BUMP")
     VERSION=$(printf '%s\n' "$bump_output" | tail -n 1 | tr -d '[:space:]')
+    if [ "$PUBLISH" -eq 1 ] && [ "$ALLOW_DIRTY" -eq 0 ]; then
+        BUMP_PENDING=1
+    fi
 else
     echo ""
     echo "${CYAN}[1/5] Lendo versao atual (--no-bump)...${RESET}"
@@ -155,6 +198,17 @@ echo "${GREEN}Versao: $VERSION${RESET}"
 TAG="v$VERSION"
 DEB_NAME="${APP_NAME}_${VERSION}_${ARCH}.deb"
 DEB_OUT="$SCRIPT_DIR/build/deb/$DEB_NAME"
+
+if [ "$PUBLISH" -eq 1 ]; then
+    if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+        if [ "$DO_BUMP" -eq 1 ]; then
+            die "a tag $TAG ja existe; nao da para publicar um bump para uma versao existente."
+        fi
+        tag_commit=$(git rev-list -n 1 "$TAG")
+        [ "$tag_commit" = "$(git rev-parse HEAD)" ] \
+            || die "a tag $TAG existe mas aponta para outro commit que nao o HEAD. Faca 'git checkout $TAG' ou publique uma nova versao (sem --no-bump)."
+    fi
+fi
 
 # --- Copiar o interpretador e instalar dependencias ----------------------
 echo ""
@@ -289,15 +343,38 @@ echo "Versao:  $VERSION"
 echo "Pacote:  $DEB_OUT"
 echo "${GRAY}$(dpkg-deb --show "$DEB_OUT")${RESET}"
 
-# --- Publicar Release no GitHub ------------------------------------------
+# --- Commit/tag/push e publicacao da Release -----------------------------
 if [ "$PUBLISH" -eq 0 ]; then
     echo ""
     echo "${YELLOW}Publicacao no GitHub omitida (--no-publish).${RESET}"
+    if [ "$DO_BUMP" -eq 1 ]; then
+        echo "${GRAY}O incremento de versao ficou sem commit.${RESET}"
+        echo "${GRAY}Para desfazer: git checkout -- ${VERSION_FILES[*]}${RESET}"
+    fi
     echo "${GRAY}Para publicar depois:${RESET}"
+    echo "${GRAY}  gh release upload $TAG \"$DEB_OUT\" --repo $GITHUB_REPO --clobber   # Release ja existe${RESET}"
     echo "${GRAY}  gh release create $TAG \"$DEB_OUT\" --repo $GITHUB_REPO --title \"$APP_NAME $VERSION\" --latest${RESET}"
 else
     echo ""
-    echo "${CYAN}[5/5] Publicando Release $TAG no GitHub...${RESET}"
+    echo "${CYAN}[5/5] Commit/tag/push e publicacao de $TAG no GitHub...${RESET}"
+
+    if [ "$DO_BUMP" -eq 1 ]; then
+        git add -- "${VERSION_FILES[@]}"
+        git commit --quiet -m "Release $TAG" -- "${VERSION_FILES[@]}"
+        BUMP_PENDING=0
+        echo "${GRAY}  Commit do bump criado: $(git rev-parse --short HEAD)${RESET}"
+    fi
+    if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+        git tag -a "$TAG" -m "Release $TAG"
+        echo "${GRAY}  Tag $TAG criada em $(git rev-parse --short HEAD)${RESET}"
+    fi
+    PUSH_REFS=("refs/tags/$TAG")
+    [ "$DETACHED" -eq 1 ] || PUSH_REFS=(HEAD "${PUSH_REFS[@]}")
+    git push --atomic origin "${PUSH_REFS[@]}" \
+        || die "git push falhou. O pacote local esta em: $DEB_OUT"
+    if [ "$ALLOW_DIRTY" -eq 1 ] && [ -n "$(git status --porcelain)" ]; then
+        echo "${YELLOW}Aviso: build feito com --allow-dirty; o .deb inclui alteracoes que nao estao em $TAG.${RESET}"
+    fi
 
     NOTES=$(cat <<EOF
 Pacote Debian do $APP_NAME $VERSION para Pop!_OS e Ubuntu.
@@ -311,21 +388,19 @@ EOF
 )
 
     if gh release view "$TAG" --repo "$GITHUB_REPO" >/dev/null 2>&1; then
-        echo "${GRAY}  A Release $TAG ja existe. Anexando o .deb como asset.${RESET}"
+        echo "${GRAY}  Release $TAG ja existe — anexando o .deb (sem recriar).${RESET}"
         gh release upload "$TAG" "$DEB_OUT" --repo "$GITHUB_REPO" --clobber
     else
         gh release create "$TAG" "$DEB_OUT" \
             --repo "$GITHUB_REPO" \
             --title "$APP_NAME $VERSION" \
             --notes "$NOTES" \
+            --verify-tag \
             --latest
     fi
 
     release_url="https://github.com/$GITHUB_REPO/releases/tag/$TAG"
     echo "${GREEN}Release publicada: $release_url${RESET}"
-    if [ "$DO_BUMP" -eq 1 ]; then
-        echo "${YELLOW}Lembre-se de fazer commit/push do bump de versao ($VERSION) se ainda nao estiver no remoto.${RESET}"
-    fi
 fi
 
 echo ""
