@@ -43,6 +43,7 @@ UPDATE_STATE_DIR = os.path.join(
     APP_NAME,
 )
 UPDATE_CHECK_FILE = os.path.join(UPDATE_STATE_DIR, "update_check.json")
+UI_PREFS_FILE = os.path.join(UPDATE_STATE_DIR, "ui_prefs.json")
 
 def ts() -> str:
     return time.strftime("[%Y-%m-%d %H:%M:%S]")
@@ -93,6 +94,31 @@ def mark_update_checked() -> None:
     state = load_update_check_state()
     state["last_check_date"] = date.today().isoformat()
     save_update_check_state(state)
+
+def load_ui_prefs() -> Dict[str, Any]:
+    try:
+        if os.path.exists(UI_PREFS_FILE):
+            with open(UI_PREFS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data if isinstance(data, dict) else {}
+    except Exception:
+        pass
+    return {}
+
+def save_ui_prefs(prefs: Dict[str, Any]) -> None:
+    try:
+        os.makedirs(UPDATE_STATE_DIR, exist_ok=True)
+        current = load_ui_prefs()
+        current.update(prefs)
+        with open(UI_PREFS_FILE, "w", encoding="utf-8") as f:
+            json.dump(current, f, indent=2)
+    except Exception:
+        pass
+
+def _existing_dir(path: Optional[str]) -> str:
+    if path and os.path.isdir(path):
+        return path
+    return ""
 
 def _installer_suffixes() -> Tuple[str, ...]:
     """Extensão do instalador desta plataforma (o .exe do Windows não serve no Linux)."""
@@ -364,11 +390,32 @@ class AppState:
     def __init__(self):
         self.pdf_path: str = ""
         self.output_dir: str = ""
+        self.last_pdf_dir: str = ""
         self.documents: List[Dict[str, Any]] = []
         self.log_lines: List[str] = []
         self.selections_cache: Dict[str, Dict[str, bool]] = {}
         self.token_provider: str = DEFAULT_TOKEN_PROVIDER
         self.load_selections()
+        self.load_ui_prefs()
+
+    def load_ui_prefs(self):
+        prefs = load_ui_prefs()
+        self.last_pdf_dir = _existing_dir(prefs.get("last_pdf_dir"))
+        self.output_dir = _existing_dir(prefs.get("last_output_dir"))
+
+    def remember_pdf_location(self, pdf_path: str) -> None:
+        pdf_dir = _existing_dir(os.path.dirname(pdf_path))
+        if not pdf_dir:
+            return
+        self.last_pdf_dir = pdf_dir
+        save_ui_prefs({"last_pdf_dir": pdf_dir})
+
+    def remember_output_dir(self, output_dir: str) -> None:
+        output_dir = _existing_dir(output_dir)
+        if not output_dir:
+            return
+        self.output_dir = output_dir
+        save_ui_prefs({"last_output_dir": output_dir})
         
     def load_selections(self):
         try:
@@ -979,6 +1026,8 @@ class MainWindow(QMainWindow):
         row_dest = QHBoxLayout()
         self.dest_input = QLineEdit()
         self.dest_input.setReadOnly(True)
+        if self.state.output_dir:
+            self.dest_input.setText(self.state.output_dir)
         btn_dest = QPushButton("Selecionar Pasta")
         btn_dest.clicked.connect(self.select_dest)
         row_dest.addWidget(self.dest_input)
@@ -1328,7 +1377,10 @@ class MainWindow(QMainWindow):
         self.log_area.append(line)
 
     def select_pdf(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Selecionar PDF", "", "PDF Files (*.pdf)")
+        start_dir = self.state.last_pdf_dir or self.state.output_dir or ""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Selecionar PDF", start_dir, "PDF Files (*.pdf)"
+        )
         if path:
             self.state.documents.clear()
             self.state.log_lines.clear()
@@ -1346,8 +1398,11 @@ class MainWindow(QMainWindow):
             
             self.state.pdf_path = path
             self.pdf_input.setText(path)
-            
-            self.state.output_dir = os.path.dirname(path)
+            self.state.remember_pdf_location(path)
+
+            # Mantém pasta de destino lembrada; se ainda não houver, usa a do PDF.
+            if not self.state.output_dir:
+                self.state.remember_output_dir(os.path.dirname(path))
             self.dest_input.setText(self.state.output_dir)
                 
             # Limpa lixo residual do PyMuPDF na RAM (C variables e arrays isolados de pdfs antigos)
@@ -1356,9 +1411,10 @@ class MainWindow(QMainWindow):
             self.log(f"Pronto para novo processamento. PDF Selecionado: {path}")
 
     def select_dest(self):
-        path = QFileDialog.getExistingDirectory(self, "Selecionar Pasta de Destino")
+        start_dir = self.state.output_dir or self.state.last_pdf_dir or ""
+        path = QFileDialog.getExistingDirectory(self, "Selecionar Pasta de Destino", start_dir)
         if path:
-            self.state.output_dir = path
+            self.state.remember_output_dir(path)
             self.dest_input.setText(path)
             self.log(f"Destino: {path}")
 
