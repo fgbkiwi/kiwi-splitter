@@ -16,6 +16,14 @@ from typing import List, Dict, Any, Optional, Tuple, Callable
 import pymupdf as fitz
 import tiktoken
 
+# Import explícito: o tiktoken descobre encodings via pkgutil em tiktoken_ext
+# (namespace package). Empacotadores (Pynsist/Nuitka) não veem essa carga
+# dinâmica e omitem openai_public.py → "Plugins found: []".
+try:
+    import tiktoken_ext.openai_public  # noqa: F401
+except ImportError:
+    pass
+
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QFileDialog, QProgressBar,
@@ -33,7 +41,7 @@ from PyQt6.QtGui import QIcon, QPixmap, QMovie, QPainter, QPainterPath
 _QWIDGETSIZE_MAX = 16777215
 
 APP_NAME = "Kiwi-Splitter"
-APP_VERSION = "1.3.2"
+APP_VERSION = "1.3.3"
 GITHUB_OWNER = "fgbkiwi"
 GITHUB_REPO = "kiwi-splitter"
 GITHUB_RELEASES_API = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
@@ -224,7 +232,8 @@ _GEMMA3_MODEL_SHA256 = (
     "1299c11d7cf632ef3b4e11937501358ada021bbdf7c47638d13c0ee982f2e79c"
 )
 
-_tiktoken_enc = None
+_tiktoken_enc = None  # Encoding | False (falha permanente) | None (ainda não tentou)
+_tiktoken_error: Optional[str] = None
 _gemini_sp = None
 _token_method: Dict[str, str] = {}
 
@@ -242,11 +251,38 @@ def _heuristic_tokens(text: str, provider: str) -> int:
     return max(int(chars / 2.05), int(words * 1.5))
 
 
+def _register_tiktoken_plugins_manually() -> None:
+    """Registra construtores se a descoberta via pkgutil falhar no app empacotado."""
+    from tiktoken_ext.openai_public import ENCODING_CONSTRUCTORS
+    import tiktoken.registry as reg
+
+    with reg._lock:
+        if reg.ENCODING_CONSTRUCTORS is None:
+            reg.ENCODING_CONSTRUCTORS = {}
+        for name, constructor in ENCODING_CONSTRUCTORS.items():
+            reg.ENCODING_CONSTRUCTORS.setdefault(name, constructor)
+        # Invalidar cache de plugins vazios gerado antes do registro.
+        reg._available_plugin_modules.cache_clear()
+
+
 def _get_tiktoken_encoder():
-    global _tiktoken_enc
-    if _tiktoken_enc is None:
-        _tiktoken_enc = tiktoken.get_encoding("cl100k_base")
-    return _tiktoken_enc
+    global _tiktoken_enc, _tiktoken_error
+    if _tiktoken_enc is False:
+        raise RuntimeError(_tiktoken_error or "tiktoken indisponível")
+    if _tiktoken_enc is not None:
+        return _tiktoken_enc
+    try:
+        try:
+            _tiktoken_enc = tiktoken.get_encoding("cl100k_base")
+        except ValueError:
+            # Plugins found: [] — típico de instalador sem tiktoken_ext descoberto.
+            _register_tiktoken_plugins_manually()
+            _tiktoken_enc = tiktoken.get_encoding("cl100k_base")
+        return _tiktoken_enc
+    except Exception as e:
+        _tiktoken_enc = False
+        _tiktoken_error = str(e)
+        raise
 
 
 def _gemma3_model_path() -> str:
@@ -315,7 +351,8 @@ def estimate_tokens(
             _token_method[provider] = "tiktoken:cl100k_base"
             return n
         except Exception as e:
-            if log_cb:
+            # Aviso uma única vez: a falha fica cacheada em _tiktoken_enc=False.
+            if log_cb and _token_method.get(provider) != "heuristic:openai-pt":
                 log_cb(f"Aviso: tiktoken indisponível ({e}); usando heurística PT-BR.")
             _token_method[provider] = "heuristic:openai-pt"
             return _heuristic_tokens(text, TOKEN_PROVIDER_OPENAI)
